@@ -1,9 +1,4 @@
 # Gmail Malicious Email Scorer
-## Demo
-
-[![Watch the demo](https://img.youtube.com/vi/FHLjvT_9miY/maxresdefault.jpg)](https://youtu.be/FHLjvT_9miY)
-
-A live walkthrough scoring a phishing email and a legitimate email side by side.
 
 A Gmail Add-on that analyzes incoming emails in real-time and assigns a phishing risk score using a hybrid rule engine + LLM architecture.
 

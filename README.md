@@ -4,6 +4,14 @@ A Gmail Add-on that analyzes incoming emails in real-time and assigns a phishing
 
 ---
 
+## Demo
+
+[![Watch the demo](https://img.youtube.com/vi/WM8fI7Qf0uQ/maxresdefault.jpg)](https://www.youtube.com/watch?v=WM8fI7Qf0uQ)
+
+A live walkthrough scoring a phishing email and a legitimate email side by side.
+
+---
+
 ## Architecture & Flow
 
 ```

@@ -1,25 +1,32 @@
 import os
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor
+from email.utils import parsedate_to_datetime
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 from backend.models.email_request import EmailAnalysisRequest, EmailAnalysisResponse
+from backend.storage import history
 from backend.sanitizer.pipeline import sanitize
 from backend.analyzers.header_analyzer import analyze_headers
 from backend.analyzers.content_analyzer import analyze_content
 from backend.analyzers.url_analyzer import analyze_urls
 from backend.analyzers.attachment_analyzer import analyze_attachments
-from backend.analyzers.virustotal_analyzer import analyze_with_virustotal
+from backend.analyzers.virustotal_analyzer import analyze_with_virustotal, analyze_urls_with_virustotal
 from backend.analyzers.llm_analyzer import analyze_with_llm
+from backend.analyzers.reputation_analyzer import analyze_reputation
 from backend.scoring.aggregator import aggregate
 
 app = FastAPI(title="Malicious Email Scorer", version="1.0.0")
 
+# Allow all origins for dev; restrict in production
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -28,52 +35,105 @@ app.add_middleware(
 )
 
 
+_INDEX_HTML = Path(__file__).parent / "web" / "index.html"
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
 
+@app.get("/")
+def index():
+    """Simple web UI to paste an email and see its score."""
+    return FileResponse(_INDEX_HTML)
+
+
+@app.get("/api/v1/history")
+def scan_history(limit: int = 50):
+    """Recent scans, newest first (empty if no database is configured)."""
+    return history.recent_scans(limit)
+
+
 @app.post("/api/v1/analyze", response_model=EmailAnalysisResponse)
 def analyze_email(request: EmailAnalysisRequest) -> EmailAnalysisResponse:
+    # Run sanitization and VirusTotal in parallel — both are independent of each other
     with ThreadPoolExecutor(max_workers=2) as ex:
         sanitize_f = ex.submit(sanitize, request)
         vt_f = ex.submit(analyze_with_virustotal, request.attachments)
     sanitized = sanitize_f.result()
     vt_score, vt_signals = vt_f.result()
 
+    # Extract sender domain for URL cross-referencing (e.g. link spoofing detection)
     sender_domain = None
     if sanitized["headers"].from_address:
         match = re.search(r"@([\w.\-]+)", sanitized["headers"].from_address)
         sender_domain = match.group(1).lower() if match else None
 
-    with ThreadPoolExecutor(max_workers=4) as ex:
+    # Measure domain age relative to when the email was sent, when the date is known.
+    as_of = None
+    if sanitized["headers"].sent_date:
+        try:
+            as_of = parsedate_to_datetime(sanitized["headers"].sent_date)
+        except (TypeError, ValueError):
+            as_of = None
+
+    # Run all analyzers concurrently; LLM runs alongside rule-based checks
+    with ThreadPoolExecutor(max_workers=7) as ex:
         header_f = ex.submit(analyze_headers, sanitized["headers"])
         content_f = ex.submit(analyze_content, sanitized["body"], sanitized["subject"])
         url_f = ex.submit(analyze_urls, sanitized["urls"], sanitized["link_mismatches"], sanitized["has_base64_payload"], sender_domain)
         attachment_f = ex.submit(analyze_attachments, sanitized["attachments"])
         llm_f = ex.submit(analyze_with_llm, sanitized)
+        rep_f = ex.submit(analyze_reputation, sender_domain, sanitized["urls"], as_of)
+        vt_url_f = ex.submit(analyze_urls_with_virustotal, sanitized["urls"])
 
     header_score, header_signals = header_f.result()
     content_score, content_signals = content_f.result()
     url_score, url_signals = url_f.result()
     attachment_score, attachment_signals = attachment_f.result()
     llm_score, explanation, llm_signals = llm_f.result()
+    rep_score, rep_signals = rep_f.result()
+    vt_url_score, vt_url_signals = vt_url_f.result()
 
-    rule_score = min(header_score + content_score + url_score + attachment_score + vt_score, 100)
-    all_rule_signals = header_signals + content_signals + url_signals + attachment_signals + vt_signals
+    # Cap rule-based score at 100 before blending with LLM score
+    rule_score = min(header_score + content_score + url_score + attachment_score + vt_score + rep_score + vt_url_score, 100)
+    all_rule_signals = header_signals + content_signals + url_signals + attachment_signals + vt_signals + rep_signals + vt_url_signals
 
-    final_score, verdict, verdict_label = aggregate(rule_score, llm_score, all_rule_signals)
     all_signals = all_rule_signals + llm_signals
+    # Pass the full signal set (incl. the LLM's legitimate/impersonation reads) so the
+    # aggregator can let a confident "legitimate" verdict dampen weak structural noise.
+    final_score, verdict, verdict_label = aggregate(rule_score, llm_score, all_signals)
 
-    if any(s.type == "virustotal_malicious" for s in vt_signals):
+    # A VirusTotal malicious verdict (file or link) is a hard override — always dangerous
+    if any(s.type == "virustotal_malicious" for s in vt_signals) or \
+       any(s.type == "vt_url_malicious" for s in vt_url_signals):
         final_score = 100
         verdict = "dangerous"
         verdict_label = "Likely Phishing"
 
-    return EmailAnalysisResponse(
+    response = EmailAnalysisResponse(
         score=final_score,
         verdict=verdict,
         verdict_label=verdict_label,
         explanation=explanation,
         signals=all_signals,
     )
+
+    # Persist the scan to RDS (the "History Of Actions" indicator). Fire-and-forget
+    # on a daemon thread so it never adds latency to, or fails, the response.
+    threading.Thread(
+        target=history.record_scan,
+        kwargs=dict(
+            subject=sanitized["subject"],
+            sender=sanitized["headers"].from_address,
+            score=final_score,
+            verdict=verdict,
+            verdict_label=verdict_label,
+            explanation=explanation,
+            signals=[s.model_dump() for s in all_signals],
+        ),
+        daemon=True,
+    ).start()
+
+    return response

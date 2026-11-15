@@ -9,6 +9,13 @@ class EmailHeaders(BaseModel):
     from_address: Optional[str] = None
     reply_to: Optional[str] = None
     received_from: Optional[str] = None
+    # Full Received chain and raw Authentication-Results, used to detect a
+    # security relay (e.g. Mimecast) that legitimately breaks SPF/DKIM/DMARC.
+    received_chain: Optional[str] = None
+    auth_results: Optional[str] = None
+    # The email's Date header (RFC 2822). Domain age is measured relative to this,
+    # not to "now", so historical triage reflects the age at the time of sending.
+    sent_date: Optional[str] = None
 
 
 class AttachmentMeta(BaseModel):

@@ -4,9 +4,18 @@ from bs4 import BeautifulSoup
 
 _URL_LIKE = re.compile(r"^https?://|^www\.", re.IGNORECASE)
 
-# Base64 strings of 100+ chars are suspicious in email HTML —
-# legitimate emails don't embed long encoded payloads inline.
-_BASE64_RE = re.compile(r"[A-Za-z0-9+/]{100,}={0,2}")
+# Security gateways rewrite the href (wrapping the original URL), which makes the
+# visible text differ from the href even for legitimate mail. A mismatch where the
+# href points to one of these is the rewriter, not a phishing trick, so it's ignored.
+_URL_REWRITERS = ("safelinks", "urldefense", "mimecast", "protection.outlook",
+                  "proofpoint", "barracuda", "cudasvc", "clean.mx", "linkprotect")
+
+# Inline images/fonts (data: URIs) are legitimate base64 and must be excluded,
+# otherwise every email with an embedded logo looks suspicious.
+_DATA_URI_RE = re.compile(r"data:[^,\s;]*(;base64)?,[A-Za-z0-9+/=]+", re.IGNORECASE)
+# After stripping those, a very long raw base64 blob (likely a hidden script
+# payload) is what we actually care about. Threshold raised from 100 to 300.
+_BASE64_RE = re.compile(r"[A-Za-z0-9+/]{300,}={0,2}")
 
 
 def _root_domain(domain: str) -> str:
@@ -39,7 +48,9 @@ def detect_base64_payload(html: str) -> bool:
     """
     if not html:
         return False
-    return bool(_BASE64_RE.search(html))
+    # Remove legitimate inline images/fonts first, then look for a long raw blob.
+    stripped = _DATA_URI_RE.sub("", html)
+    return bool(_BASE64_RE.search(stripped))
 
 
 def extract_link_mismatches(html: str) -> list[dict]:
@@ -65,6 +76,11 @@ def extract_link_mismatches(html: str) -> list[dict]:
             href_domain = urlparse(href).netloc.lower().lstrip("www.")
             text_domain = urlparse(text if text.startswith("http") else "http://" + text).netloc.lower().lstrip("www.")
         except Exception:
+            continue
+
+        # Skip rewritten links (Safe Links / Proofpoint / Mimecast wrappers): the
+        # href is the gateway, not a deceptive destination.
+        if any(marker in href_domain for marker in _URL_REWRITERS):
             continue
 
         if href_domain and text_domain and _root_domain(href_domain) != _root_domain(text_domain):

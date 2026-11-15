@@ -1,4 +1,6 @@
-var BACKEND_URL = "https://upwind-home-ass.onrender.com/api/v1/analyze";
+// Single place to point the add-on at a backend deployment
+var BACKEND_BASE_URL = "https://degrees-assigned-currently-screw.trycloudflare.com";
+var BACKEND_URL = BACKEND_BASE_URL + "/api/v1/analyze";
 
 function onGmailMessage(e) {
   var accessToken = e.messageMetadata.accessToken;
@@ -72,7 +74,7 @@ function buildPayload(message, messageId) {
   };
 }
 
-var HEALTH_URL = "https://upwind-home-ass.onrender.com/health";
+var HEALTH_URL = BACKEND_BASE_URL + "/health";
 var MAX_RETRIES = 3;
 
 function callBackend(payload) {

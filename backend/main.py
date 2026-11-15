@@ -11,9 +11,15 @@ load_dotenv()
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
 from backend.models.email_request import EmailAnalysisRequest, EmailAnalysisResponse
 from backend.storage import history
+from backend.ingest import parse_raw_email
+
+
+class RawEmail(BaseModel):
+    raw: str
 from backend.sanitizer.pipeline import sanitize
 from backend.analyzers.header_analyzer import analyze_headers
 from backend.analyzers.content_analyzer import analyze_content
@@ -53,6 +59,14 @@ def index():
 def scan_history(limit: int = 50):
     """Recent scans, newest first (empty if no database is configured)."""
     return history.recent_scans(limit)
+
+
+@app.post("/api/v1/analyze-raw", response_model=EmailAnalysisResponse)
+def analyze_raw(payload: RawEmail) -> EmailAnalysisResponse:
+    """Analyze a raw RFC-822 email (Gmail 'Show original' / .eml). Unlike the
+    field form, this carries the real headers, so SPF/DKIM/DMARC and relay
+    detection run."""
+    return analyze_email(parse_raw_email(payload.raw))
 
 
 @app.post("/api/v1/analyze", response_model=EmailAnalysisResponse)

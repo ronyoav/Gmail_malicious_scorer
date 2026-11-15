@@ -15,9 +15,15 @@
   .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:18px; margin-bottom:18px; }
   label { display:block; font-size:13px; color:var(--muted); margin:10px 0 4px; }
   input, textarea { width:100%; padding:9px 10px; border:1px solid var(--border); border-radius:8px; font:inherit; }
-  textarea { min-height:150px; resize:vertical; }
+  textarea { resize:vertical; }
+  textarea.raw { min-height:220px; font-family:ui-monospace,Consolas,monospace; font-size:12px; white-space:pre; }
+  textarea.body { min-height:150px; }
   button { margin-top:14px; background:var(--accent); color:#fff; border:0; border-radius:8px; padding:10px 18px; font-size:15px; cursor:pointer; }
   button:disabled { opacity:.6; cursor:default; }
+  .tabs { display:flex; gap:8px; margin-bottom:14px; }
+  .tab { flex:0 0 auto; padding:8px 14px; border:1px solid var(--border); background:var(--card); border-radius:999px; cursor:pointer; font-size:14px; color:var(--muted); }
+  .tab.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .hint { font-size:12px; color:var(--muted); margin:0 0 6px; }
   .verdict { font-size:15px; font-weight:600; padding:4px 10px; border-radius:999px; display:inline-block; }
   .v-safe { background:#e7f4ec; color:var(--safe); } .v-susp { background:#fbf3e3; color:var(--susp); } .v-bad { background:#fbe9e9; color:var(--bad); }
   .score { font-size:40px; font-weight:700; }
@@ -33,17 +39,33 @@
 <body>
 <div class="wrap">
   <h1>Phishing Email Scorer</h1>
-  <p class="sub">Paste an email below to get a phishing risk score. Results are saved to the scan history.</p>
+  <p class="sub">Score an email for phishing risk. Results are saved to the scan history.</p>
 
   <div class="card">
-    <label for="subject">Subject</label>
-    <input id="subject" placeholder="e.g. Security alert for your account">
-    <label for="from">From</label>
-    <input id="from" placeholder="e.g. no-reply@accounts.google.com">
-    <label for="body">Email body</label>
-    <textarea id="body" placeholder="Paste the email text here (links are detected automatically)…"></textarea>
-    <button id="go" onclick="analyze()">Analyze</button>
-    <span id="err" style="color:var(--bad); margin-left:12px;"></span>
+    <div class="tabs">
+      <div class="tab active" id="tab-raw" onclick="setMode('raw')">Raw email (recommended)</div>
+      <div class="tab" id="tab-fields" onclick="setMode('fields')">Enter fields</div>
+    </div>
+
+    <div id="mode-raw">
+      <p class="hint">Gmail → open the email → ⋮ → <strong>Show original</strong> → Copy to clipboard, then paste here.
+      This includes the headers, so SPF / DKIM / DMARC and relay checks run.</p>
+      <textarea id="raw" class="raw" placeholder="Paste the full raw email source here…"></textarea>
+      <button id="go-raw" onclick="analyzeRaw()">Analyze</button>
+      <span id="err-raw" style="color:var(--bad); margin-left:12px;"></span>
+    </div>
+
+    <div id="mode-fields" style="display:none">
+      <p class="hint">Quick check from body text only — header-based checks (SPF/DKIM/DMARC) won't run here.</p>
+      <label for="subject">Subject</label>
+      <input id="subject" placeholder="e.g. Security alert for your account">
+      <label for="from">From</label>
+      <input id="from" placeholder="e.g. no-reply@accounts.google.com">
+      <label for="body">Email body</label>
+      <textarea id="body" class="body" placeholder="Paste the email text here (links are detected automatically)…"></textarea>
+      <button id="go-fields" onclick="analyzeFields()">Analyze</button>
+      <span id="err-fields" style="color:var(--bad); margin-left:12px;"></span>
+    </div>
   </div>
 
   <div class="card" id="result" style="display:none"></div>
@@ -58,35 +80,49 @@
 const $ = id => document.getElementById(id);
 const vclass = v => v === "safe" ? "v-safe" : v === "suspicious" ? "v-susp" : "v-bad";
 
+function setMode(m) {
+  $("mode-raw").style.display = m === "raw" ? "block" : "none";
+  $("mode-fields").style.display = m === "fields" ? "block" : "none";
+  $("tab-raw").classList.toggle("active", m === "raw");
+  $("tab-fields").classList.toggle("active", m === "fields");
+}
+
 function extractUrls(text) {
   return [...new Set((text.match(/https?:\/\/[^\s"'<>)\]]+/gi) || []).map(u => u.replace(/[.,;]+$/, "")))];
 }
 
-async function analyze() {
-  $("err").textContent = "";
-  const body = $("body").value.trim();
-  if (!body && !$("subject").value.trim()) { $("err").textContent = "Enter a subject or body first."; return; }
-  $("go").disabled = true; $("go").textContent = "Analyzing…";
+async function post(url, payload, btn, errEl) {
+  $(errEl).textContent = "";
+  $(btn).disabled = true; const label = $(btn).textContent; $(btn).textContent = "Analyzing…";
   try {
-    const req = {
-      message_id: "web-" + Date.now(),
-      subject: $("subject").value,
-      headers: { from_address: $("from").value || null },
-      body_text: body || null,
-      urls: extractUrls(body),
-      attachments: []
-    };
-    const res = await fetch("/api/v1/analyze", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(req)
-    });
+    const res = await fetch(url, { method:"POST", headers:{ "Content-Type":"application/json" }, body:JSON.stringify(payload) });
     if (!res.ok) throw new Error("HTTP " + res.status);
     render(await res.json());
     loadHistory();
   } catch (e) {
-    $("err").textContent = "Failed: " + e.message;
+    $(errEl).textContent = "Failed: " + e.message;
   } finally {
-    $("go").disabled = false; $("go").textContent = "Analyze";
+    $(btn).disabled = false; $(btn).textContent = label;
   }
+}
+
+function analyzeRaw() {
+  const raw = $("raw").value.trim();
+  if (!raw) { $("err-raw").textContent = "Paste the raw email first."; return; }
+  post("/api/v1/analyze-raw", { raw }, "go-raw", "err-raw");
+}
+
+function analyzeFields() {
+  const body = $("body").value.trim();
+  if (!body && !$("subject").value.trim()) { $("err-fields").textContent = "Enter a subject or body first."; return; }
+  post("/api/v1/analyze", {
+    message_id: "web-" + Date.now(),
+    subject: $("subject").value,
+    headers: { from_address: $("from").value || null },
+    body_text: body || null,
+    urls: extractUrls(body),
+    attachments: []
+  }, "go-fields", "err-fields");
 }
 
 function render(r) {
@@ -102,6 +138,7 @@ function render(r) {
      </div>
      <p style="margin:12px 0 4px">${escapeHtml(r.explanation || "")}</p>
      <div style="margin-top:8px">${sigs}</div>`;
+  el.scrollIntoView({ behavior:"smooth", block:"nearest" });
 }
 
 async function loadHistory() {

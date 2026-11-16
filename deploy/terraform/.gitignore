@@ -1,0 +1,13 @@
+# Terraform state may contain secrets (DB password, etc.) — never commit it.
+*.tfstate
+*.tfstate.*
+.terraform/
+crash.log
+crash.*.log
+
+# Local variable files (may contain overrides) — keep only the example.
+*.tfvars
+!*.tfvars.example
+
+# Generated app bundle
+.app_bundle.zip

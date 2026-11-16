@@ -268,3 +268,20 @@ PII (SSN, credit cards, phone numbers) is stripped in the Gmail Add-on before th
 | Schema validation | Pydantic v2 |
 | Gmail Add-on | Google Apps Script |
 | Deployment | Render (auto-deploy on push to main) |
+
+---
+
+## Offline batch triage (`triage.py`)
+
+Runs the same backend pipeline (sanitizer → analyzers → VirusTotal → LLM → aggregator) over a folder of `.eml` files, without Gmail.
+The `.eml` parser replaces what the Add-on did client-side (auth results, Reply-To, Received, URLs, attachment SHA-256).
+
+```bash
+pip install -r backend/requirements.txt
+python triage.py path/to/emails/ -o triage_out            # full pipeline (needs API keys in .env)
+python triage.py path/to/emails/ --no-llm --no-vt         # rule engine only, offline-safe
+```
+
+Outputs in `triage_out/`: `results.csv` (overview, sorted by score), `results.json` (full detail) and `report.md` (per-email findings + analyst-verdict fields).
+Domain reputation (`backend/analyzers/reputation_analyzer.py`, also used by the API): for the sender domain and each link domain it checks **domain age via RDAP** (free, no key) and the **VirusTotal domain report**. Results are cached per domain, and VT calls are throttled to the free-tier 4/min (`--vt-interval 15`, shared with attachment lookups). Flags: `--no-vt`, `--no-rdap`.
+If the LLM is disabled or fails, the score falls back to the rule engine alone instead of being diluted by the missing 30% LLM share.

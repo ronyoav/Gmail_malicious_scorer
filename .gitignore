@@ -437,5 +437,7 @@ env
 venv/
 .venv/
 .env
-.mcp.json
 .claude/
+
+triage_out/
+samples/

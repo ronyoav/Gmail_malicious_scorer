@@ -63,5 +63,7 @@ terraform destroy
 ## Follow-ups
 - **TLS/HTTPS**: the ALB listens on port 80 only. Production should add an ACM certificate and an
   HTTPS listener (and redirect 80 → 443) so email content isn't sent in the clear.
-- **App delivery is a one-shot `apply`**: code is zipped to S3 at apply time; there is no CI/CD, so
-  updating the app means re-running `apply` and recycling the instances.
+- **App code** now ships via CI/CD (`.github/workflows/ci-cd.yml`): a push to `main` runs the tests,
+  then uploads a fresh bundle to S3 and starts an ASG instance refresh. **Infrastructure** changes
+  still go through `terraform apply` by hand (and `apply` alone updates S3 but does not recycle
+  running instances — the pipeline, or a manual `start-instance-refresh`, does that).

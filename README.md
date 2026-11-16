@@ -285,6 +285,31 @@ PII (SSN, credit cards, phone numbers) is stripped in the Gmail Add-on before th
 
 ---
 
+## Continuous delivery (CI/CD)
+
+`.github/workflows/ci-cd.yml` runs on every push:
+
+- **CI** (all branches/PRs): installs `backend/requirements.txt` and runs `pytest` —
+  the deterministic detector tests in `tests/` (authentication parsing, the
+  authentication-anchored aggregator, the LLM-unavailable fallback, lookalike
+  detection, source tagging). No API keys or AWS access needed; a regression fails
+  the build before it can ship.
+- **CD** (on `main`, after CI passes): zips `backend/` the same way Terraform's
+  `archive_file` does, uploads it to the `phishing-scorer-app-*` S3 bucket, and
+  starts an Auto Scaling Group **instance refresh** so new EC2s boot and pull the
+  new code. This is what closes the "merged but the cloud still runs old code" gap —
+  previously `terraform apply` updated S3 but existing instances only pull at boot.
+
+Application code ships through this pipeline; **infrastructure** changes still go
+through `terraform apply` by hand.
+
+**Setup** — add two repository secrets (Settings → Secrets and variables → Actions):
+`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` for an IAM user allowed to
+`s3:PutObject` on the app bucket, `s3:ListAllMyBuckets`, and
+`autoscaling:StartInstanceRefresh`.
+
+---
+
 ## Offline batch triage (`triage.py`)
 
 Runs the same backend pipeline (sanitizer → analyzers → VirusTotal → LLM → aggregator) over a folder of `.eml` files, without Gmail.

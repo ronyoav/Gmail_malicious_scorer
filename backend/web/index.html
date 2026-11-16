@@ -42,6 +42,10 @@
     <p class="hint">Gmail → open the email → ⋮ → <strong>Show original</strong> → Copy to clipboard, then paste here.
     This includes the headers, so SPF / DKIM / DMARC and relay checks run.</p>
     <textarea id="raw" class="raw" placeholder="Paste the full raw email source here…"></textarea>
+    <div style="margin-top:10px">
+      <label class="hint" for="file" style="display:block;cursor:pointer">…or upload a <strong>.eml</strong> / <strong>.txt</strong> file (loaded into the box above, then analyzed):</label>
+      <input id="file" type="file" accept=".eml,.txt,message/rfc822,text/plain" onchange="loadFile(this)">
+    </div>
     <button id="go-raw" onclick="analyzeRaw()">Analyze</button>
     <span id="err-raw" style="color:var(--bad); margin-left:12px;"></span>
   </div>
@@ -75,8 +79,17 @@ async function post(url, payload, btn, errEl) {
 
 function analyzeRaw() {
   const raw = $("raw").value.trim();
-  if (!raw) { $("err-raw").textContent = "Paste the raw email first."; return; }
+  if (!raw) { $("err-raw").textContent = "Paste or upload the raw email first."; return; }
   post("/api/v1/analyze-raw", { raw }, "go-raw", "err-raw");
+}
+
+function loadFile(input) {
+  const f = input.files && input.files[0];
+  if (!f) return;
+  const reader = new FileReader();
+  reader.onload = () => { $("raw").value = reader.result; analyzeRaw(); };
+  reader.onerror = () => { $("err-raw").textContent = "Couldn't read the file."; };
+  reader.readAsText(f);
 }
 
 function showResult(r) {

@@ -44,7 +44,8 @@ flowchart TB
       ASG["Auto Scaling Group<br/>desired 2 · spans 2 AZs"]
       SSM["SSM Parameter Store<br/>Claude key · VT key<br/>DATABASE_URL · REDIS_URL"]
       S3[("S3<br/>app bundle")]
-      CW["CloudWatch<br/>dashboard · log group<br/>alarms: CPU · unhealthy hosts · 5xx"]
+      CW["CloudWatch<br/>dashboard · log group<br/>alarms: CPU · unhealthy · 5xx · latency > 2s"]
+      SNS["SNS<br/>alerts topic"]
 
       ASG -. manages .-> EC2a
       ASG -. manages .-> EC2b
@@ -54,10 +55,12 @@ flowchart TB
       EC2b -. pull bundle .-> S3
       EC2a -. metrics + logs .-> CW
       EC2b -. metrics + logs .-> CW
+      CW -. alarm enters ALARM .-> SNS
     end
 
     EC2a -->|analyze| Claude([Anthropic Claude API]):::ext
     EC2a -->|domain / file / URL lookup| VT([VirusTotal API]):::ext
+    SNS -. email notification .-> Admin
     Admin([Operator]):::ext -. SSM Session Manager · no SSH .-> EC2a
 
     classDef ext fill:#eee,stroke:#999,color:#333;
@@ -72,7 +75,7 @@ flowchart TB
 | **No NAT Gateway** | EC2 sits in public subnets with public IPs instead → saves ~$32/mo. |
 | **SSM, not SSH** | No key pairs, no port 22. Shell via Session Manager; secrets via Parameter Store. |
 | **ElastiCache Redis** | Shared whole-email result cache across both instances (not in-process). |
-| **CloudWatch** | Dashboard + 3 alarms (CPU, unhealthy hosts, 5xx) + app log group. |
+| **CloudWatch + SNS** | Dashboard + 4 alarms (CPU, unhealthy hosts, 5xx, latency > 2s) + app log group. Alarms publish to an SNS topic → email (set `alert_email` at apply). |
 
 ## Request flow
 

@@ -1,6 +1,11 @@
 import re
 
-MAX_BODY_CHARS = 2000
+# Upper bound on the body text handed to the analyzers / LLM. 2000 chars (~500
+# tokens) was too small — it silently dropped most of a normal-length email, so a
+# lure or link past the cutoff was never analyzed. 16000 chars (~4k tokens) covers
+# realistic emails; anything longer keeps the head and the tail (see minimize()).
+MAX_BODY_CHARS = 16000
+_TAIL_CHARS = 4000  # of the budget, reserve this much for the end of a long email
 
 # Common signature delimiters
 _SIGNATURE_PATTERNS = [
@@ -17,4 +22,12 @@ def minimize(text: str) -> str:
     if match:
         text = text[: match.start()]
 
-    return text[:MAX_BODY_CHARS].strip()
+    text = text.strip()
+    if len(text) <= MAX_BODY_CHARS:
+        return text
+
+    # Long email: keep the head (the lure/greeting) and the tail (closing call to
+    # action, links, footer) so content at the end isn't lost to truncation.
+    head = text[: MAX_BODY_CHARS - _TAIL_CHARS]
+    tail = text[-_TAIL_CHARS:]
+    return f"{head}\n[... trimmed ...]\n{tail}"

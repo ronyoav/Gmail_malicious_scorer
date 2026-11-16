@@ -28,6 +28,19 @@ function buildPayload(message, messageId) {
   } catch (e) {}
 
   var authResults = rawHeaders["authentication-results"] || "";
+
+  // Fallback: if the advanced Gmail service failed or returned no auth header,
+  // read Authentication-Results straight from the raw message. Without this, a
+  // failure here is swallowed and SPF/DKIM/DMARC are silently reported as
+  // missing — which makes a fully authenticated email look unauthenticated.
+  if (!authResults) {
+    try {
+      var raw = message.getRawContent();
+      var m = raw.match(/^Authentication-Results:[ \t]*([\s\S]*?)(?=\r?\n\S)/mi);
+      if (m) authResults = m[1].replace(/\r?\n[ \t]+/g, " ");
+    } catch (e2) {}
+  }
+
   var spf    = extractAuthValue(authResults, "spf");
   var dkim   = extractAuthValue(authResults, "dkim");
   var dmarc  = extractAuthValue(authResults, "dmarc");

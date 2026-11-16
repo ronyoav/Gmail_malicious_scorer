@@ -161,25 +161,14 @@ def analyze_headers(headers: EmailHeaders) -> tuple[int, list[Signal]]:
                     description=f"Reply-To domain ({reply_reg}) differs from From domain ({from_reg}).",
                 ))
 
-    # Display name spoofing: "PayPal <attacker@gmail.com>"
+    # Impersonation: a display name presenting an organisational identity whose
+    # brand word is not reflected in the sending domain. List-free — no hardcoded
+    # table of brands (which only ever covered a handful and never scaled).
     if headers.from_address:
-        display_name = _extract_display_name(headers.from_address)
-        actual_domain = _extract_domain(headers.from_address)
-        if display_name and actual_domain:
-            spoofed_brand = _spoofed_brand(display_name, actual_domain)
-            if spoofed_brand:
-                score += 35
-                signals.append(Signal(
-                    type="display_name_spoofing",
-                    severity="high",
-                    description=f"Display name claims to be '{spoofed_brand}' but email is sent from '{actual_domain}'.",
-                ))
-            else:
-                # Generalized impersonation (any org identity, not just the fixed brand list)
-                generic = _generic_impersonation(headers)
-                if generic:
-                    score += 20
-                    signals.append(Signal(type="impersonation_generic", severity="medium", description=generic))
+        generic = _generic_impersonation(headers)
+        if generic:
+            score += 20
+            signals.append(Signal(type="impersonation_generic", severity="medium", description=generic))
 
     # Lookalike / homoglyph domain check
     if headers.from_address:
@@ -204,31 +193,6 @@ def _extract_display_name(address: str) -> str | None:
     """Extract the human-readable name from 'Name <email@domain.com>'."""
     match = re.match(r'^"?([^"<]+)"?\s*<', address.strip())
     return match.group(1).strip().lower() if match else None
-
-
-# Known brands: display-name keyword → legitimate sending domain
-_KNOWN_BRANDS = {
-    "paypal": "paypal.com",
-    "amazon": "amazon.com",
-    "google": "google.com",
-    "microsoft": "microsoft.com",
-    "apple": "apple.com",
-    "netflix": "netflix.com",
-    "facebook": "facebook.com",
-    "instagram": "instagram.com",
-    "chase": "chase.com",
-    "wellsfargo": "wellsfargo.com",
-    "bank of america": "bankofamerica.com",
-    "linkedin": "linkedin.com",
-}
-
-
-def _spoofed_brand(display_name: str, actual_domain: str) -> str | None:
-    """Return brand name if display name claims a known brand but domain doesn't match."""
-    for brand, legit_domain in _KNOWN_BRANDS.items():
-        if brand in display_name and not actual_domain.endswith(legit_domain):
-            return brand
-    return None
 
 
 # Words in a display name that are generic/role labels, not a brand or person's
@@ -309,14 +273,35 @@ def _levenshtein(a: str, b: str) -> int:
     return prev[-1]
 
 
+# Reference set for LOOKALIKE / typosquat detection only (NOT display-name
+# matching). Detecting that a domain *resembles* a well-known brand is impossible
+# without knowing the brands, so a small anchor list of major targets is inherent
+# to the check — it is the ground truth "paypa1.com" is measured against, not a
+# generic impersonation table.
+_BRAND_DOMAINS = {
+    "paypal": "paypal.com",
+    "amazon": "amazon.com",
+    "google": "google.com",
+    "microsoft": "microsoft.com",
+    "apple": "apple.com",
+    "netflix": "netflix.com",
+    "facebook": "facebook.com",
+    "instagram": "instagram.com",
+    "chase": "chase.com",
+    "wellsfargo": "wellsfargo.com",
+    "bank of america": "bankofamerica.com",
+    "linkedin": "linkedin.com",
+}
+
+
 def _is_lookalike(domain: str) -> bool:
     # Skip exact legitimate domains and any subdomain of a known-good brand
     # (e.g. accounts.google.com -> google.com). Without this, legitimate brand
     # subdomains are flagged as impersonating their own brand.
-    if domain in _KNOWN_BRANDS.values():
+    if domain in _BRAND_DOMAINS.values():
         return False
     reg = registrable_domain(domain)
-    if is_allowlisted(domain) or (reg and reg in _KNOWN_BRANDS.values()):
+    if is_allowlisted(domain) or (reg and reg in _BRAND_DOMAINS.values()):
         return False
 
     # Normalize unicode homoglyphs (Cyrillic/Greek → ASCII lookalikes)
@@ -335,7 +320,7 @@ def _is_lookalike(domain: str) -> bool:
         .replace("1", "l")
         .replace("0", "o")
     )
-    for brand, legit in _KNOWN_BRANDS.items():
+    for brand, legit in _BRAND_DOMAINS.items():
         brand_word = brand.split()[0]
         for candidate in (normalized, visual):
             if brand_word in candidate and domain != legit:
@@ -343,11 +328,11 @@ def _is_lookalike(domain: str) -> bool:
     # Digit-substitution typosquats — only fire if NOT a legit domain
     for candidate in (normalized, visual):
         if re.search(r"(pay[p\d]a[l1]|g[o0]{2}gle|micr[o0]s[o0]ft|app[l1]e|amaz[o0]n)", candidate):
-            if domain not in _KNOWN_BRANDS.values():
+            if domain not in _BRAND_DOMAINS.values():
                 return True
     # Edit distance: catches omissions/substitutions like linkedln.com → linkedin
     hostname = domain.split(".")[0]
-    for brand, legit in _KNOWN_BRANDS.items():
+    for brand, legit in _BRAND_DOMAINS.items():
         brand_word = brand.split()[0]
         if len(brand_word) >= 6 and hostname != brand_word and _levenshtein(hostname, brand_word) <= 1:
             return True

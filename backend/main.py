@@ -149,9 +149,17 @@ def analyze_email(request: EmailAnalysisRequest) -> EmailAnalysisResponse:
     all_rule_signals = header_signals + content_signals + url_signals + attachment_signals + vt_signals + rep_signals + vt_url_signals
 
     all_signals = all_rule_signals + llm_signals
-    # Pass the full signal set (incl. the LLM's legitimate/impersonation reads) so the
-    # aggregator can let a confident "legitimate" verdict dampen weak structural noise.
-    final_score, verdict, verdict_label = aggregate(rule_score, llm_score, all_signals)
+    # Full SPF+DKIM+DMARC pass = the From domain is authenticated (not spoofed), so
+    # soft LLM "impersonation" guesses must not push it into Suspicious on their own.
+    def _passed(v: str | None) -> bool:
+        return (v or "").strip().lower() == "pass"
+    h = sanitized["headers"]
+    authenticated = _passed(h.spf) and _passed(h.dkim) and _passed(h.dmarc)
+    # When the LLM returned no usable score, fall back to a fully deterministic
+    # rule-engine verdict instead of blending in a zero LLM share.
+    llm_available = not explanation.startswith("AI analysis unavailable")
+    final_score, verdict, verdict_label = aggregate(
+        rule_score, llm_score, all_signals, authenticated, llm_available)
 
     # A VirusTotal malicious verdict (file or link) is a hard override — always dangerous
     if any(s.type == "virustotal_malicious" for s in vt_signals) or \

@@ -34,17 +34,6 @@ _THREAT_PATTERNS = [
     r"\bpermanently (disabled|banned|suspended)\b",
 ]
 
-_RANSOMWARE_PATTERNS = [
-    r"\byour files (have been|are) encrypted\b",
-    r"\bencrypted (all )?your (files|data|documents)\b",
-    r"\bpay (to )?recover\b",
-    r"\bdecryption key\b",
-    r"\bransom\b",
-    r"\byour (data|files|computer) (has been|have been) (locked|held hostage)\b",
-    r"\bpay within \d+ hours?\b",
-    r"\bbitcoin (wallet|address|payment)\b",
-]
-
 _QR_PATTERNS = [
     r"\bscan (this |the )?(qr|q\.r\.?) ?code\b",
     r"\bpoint your (camera|phone) (at|to)\b",
@@ -59,17 +48,6 @@ _CAPTCHA_PATTERNS = [
     r"\bprove (you are|you're) (human|not a robot)\b",
     r"\bcomplete (the |a )?verification\b",
     r"\bhuman verification\b",
-]
-
-_SEXTORTION_PATTERNS = [
-    r"\bI have (access to|hacked|infected) your (camera|webcam|device|computer)\b",
-    r"\bI (recorded|filmed|captured) you\b",
-    r"\bwhile you (were )?visiting\b",
-    r"\byour (contacts|friends|family) will (receive|see)\b",
-    r"\bsend .{0,30}(bitcoin|btc|crypto).{0,30}or\b",
-    r"\bembarrassing (video|footage|recording)\b",
-    r"\bdo not (reply|contact|tell)\b.{0,50}(police|anyone)\b",
-    r"\bI will (send|share|release) (the )?(video|footage|recording|photos?)\b",
 ]
 
 
@@ -110,16 +88,6 @@ def analyze_content(body: str, subject: str) -> tuple[int, list[Signal]]:
     if captcha_hits >= 1:
         score += 20
         signals.append(Signal(type="captcha_lure", severity="medium", description="Email mentions CAPTCHA verification — used to hide phishing pages from automated security scanners."))
-
-    ransomware_hits = _count_matches(text, _RANSOMWARE_PATTERNS)
-    if ransomware_hits >= 1:
-        score += 40
-        signals.append(Signal(type="ransomware", severity="high", description="Ransomware language detected — claims files are encrypted or demands payment for recovery."))
-
-    sextortion_hits = _count_matches(text, _SEXTORTION_PATTERNS)
-    if sextortion_hits >= 1:
-        score += 40
-        signals.append(Signal(type="sextortion", severity="high", description="Sextortion attempt detected — claims to have compromising material and demands payment."))
 
     return min(score, 100), signals
 

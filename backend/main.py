@@ -128,19 +128,31 @@ def analyze_email(request: EmailAnalysisRequest) -> EmailAnalysisResponse:
 
     # Run all analyzers concurrently; LLM runs alongside rule-based checks
     with ThreadPoolExecutor(max_workers=7) as ex:
+        #TODO: make sure check spf,dkim, dmarc
         header_f = ex.submit(analyze_headers, sanitized["headers"])
-        content_f = ex.submit(analyze_content, sanitized["body"], sanitized["subject"])
-        url_f = ex.submit(analyze_urls, sanitized["urls"], sanitized["link_mismatches"], sanitized["has_base64_payload"], sender_domain)
+        #url shortener, suspicious tld, ip url, base64 payload, link text mismatch
+        url_f = ex.submit(analyze_urls, sanitized["urls"], sanitized["link_mismatches"], sanitized["has_base64_payload"])
+        #check files with virus total API call
         attachment_f = ex.submit(analyze_attachments, sanitized["attachments"])
-        llm_f = ex.submit(analyze_with_llm, sanitized)
+        # LLM judges subject + body only (fewer tokens); links/sender are rule-engine checks
+        llm_f = ex.submit(analyze_with_llm, sanitized["subject"], sanitized["body"])
+        #domain age - API call to external service
         rep_f = ex.submit(analyze_reputation, sender_domain, sanitized["urls"], as_of)
+        # check url with API to VirusTotal
         vt_url_f = ex.submit(analyze_urls_with_virustotal, sanitized["urls"])
 
     header_score, header_signals = header_f.result()
-    content_score, content_signals = content_f.result()
     url_score, url_signals = url_f.result()
     attachment_score, attachment_signals = attachment_f.result()
     llm_score, explanation, llm_signals = llm_f.result()
+
+    # The regex content analyzer is only a fallback: it runs when the LLM returned
+    # no usable result, so content is never judged twice. It is fast (regex only).
+    llm_available = not explanation.startswith("AI analysis unavailable")
+    if llm_available:
+        content_score, content_signals = 0, []
+    else:
+        content_score, content_signals = analyze_content(sanitized["body"], sanitized["subject"])
     rep_score, rep_signals = rep_f.result()
     vt_url_score, vt_url_signals = vt_url_f.result()
 
@@ -149,17 +161,9 @@ def analyze_email(request: EmailAnalysisRequest) -> EmailAnalysisResponse:
     all_rule_signals = header_signals + content_signals + url_signals + attachment_signals + vt_signals + rep_signals + vt_url_signals
 
     all_signals = all_rule_signals + llm_signals
-    # Full SPF+DKIM+DMARC pass = the From domain is authenticated (not spoofed), so
-    # soft LLM "impersonation" guesses must not push it into Suspicious on their own.
-    def _passed(v: str | None) -> bool:
-        return (v or "").strip().lower() == "pass"
-    h = sanitized["headers"]
-    authenticated = _passed(h.spf) and _passed(h.dkim) and _passed(h.dmarc)
     # When the LLM returned no usable score, fall back to a fully deterministic
     # rule-engine verdict instead of blending in a zero LLM share.
-    llm_available = not explanation.startswith("AI analysis unavailable")
-    final_score, verdict, verdict_label = aggregate(
-        rule_score, llm_score, all_signals, authenticated, llm_available)
+    final_score, verdict, verdict_label = aggregate(rule_score, llm_score, llm_available)
 
     # A VirusTotal malicious verdict (file or link) is a hard override — always dangerous
     if any(s.type == "virustotal_malicious" for s in vt_signals) or \

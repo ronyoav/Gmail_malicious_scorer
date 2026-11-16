@@ -2,8 +2,7 @@
 and no API keys. They pin the logic that makes a verdict trustworthy:
 
 - authentication parsing from the raw headers,
-- the authentication-anchored aggregator (an authenticated sender can't be flagged
-  on soft signals; concrete evidence still overrides),
+- the score-only aggregator (no signal-based floors or caps),
 - the 100%-deterministic fallback when the LLM is unavailable,
 - lookalike/typosquat detection,
 - per-finding source tagging (rule vs llm).
@@ -39,33 +38,30 @@ def test_parse_extracts_authentication():
     assert (req.headers.spf, req.headers.dkim, req.headers.dmarc) == ("pass", "pass", "pass")
 
 
-def test_authenticated_legit_stays_safe_even_if_llm_screams():
+def test_authenticated_legit_adds_no_header_points():
     req = parse_raw_email(AUTHED_LEGIT)
     assert _authenticated(req) is True
-    # LLM pushed the content score to 90; with no hard rule evidence, an
-    # authenticated sender must still land Safe.
-    _, verdict, _ = aggregate(rule_score=0, llm_score=90, all_signals=[], authenticated=True)
-    assert verdict == "safe"
+    score, _ = analyze_headers(req.headers)
+    assert score == 0
 
 
 def test_llm_has_no_authority_of_its_own():
     # No "LLM says legitimate -> lower the score" branch exists: a real rule score
     # is not pulled down, and the LLM share is just the 40% blend.
-    score, verdict, _ = aggregate(rule_score=70, llm_score=0, all_signals=[], authenticated=False)
+    score, verdict, _ = aggregate(rule_score=70, llm_score=0)
     assert score == 42 and verdict == "suspicious"
 
 
 def test_llm_unavailable_is_fully_deterministic():
-    blended = aggregate(70, 0, [], llm_available=True)[0]
-    deterministic = aggregate(70, 0, [], llm_available=False)[0]
+    blended = aggregate(70, 0, llm_available=True)[0]
+    deterministic = aggregate(70, 0, llm_available=False)[0]
     assert deterministic == 70          # rule engine at full weight
     assert deterministic > blended      # not diluted by the missing LLM share
 
 
-def test_concrete_evidence_overrides_authenticated_cap():
-    sig = Signal(type="lookalike_domain", severity="high", description="looks like a brand")
-    score, _, _ = aggregate(rule_score=0, llm_score=0, all_signals=[sig], authenticated=True)
-    assert score >= 40                  # concrete evidence floor beats the Safe cap
+def test_verdict_comes_from_score_only():
+    assert aggregate(0, 0)[1] == "safe"
+    assert aggregate(100, 100)[1] == "dangerous"
 
 
 def test_lookalike_detection():

@@ -5,12 +5,11 @@ var _SIGNAL_GROUPS = {
   ],
   "Content": [
     "urgency_language", "credential_phishing", "financial_lure", "threat_language",
-    "qr_code_lure", "captcha_lure", "ransomware", "sextortion"
+    "qr_code_lure", "captcha_lure"
   ],
   "Links & URLs": [
-    "url_shortener", "suspicious_tld", "ip_url", "http_url",
-    "known_bad_domain", "phishing_keyword_domain", "long_url",
-    "redirect_param", "external_domain", "link_text_mismatch", "base64_payload"
+    "url_shortener", "suspicious_tld", "ip_url",
+    "link_text_mismatch", "base64_payload"
   ],
   "Attachments": [
     "dangerous_attachment", "suspicious_attachment",

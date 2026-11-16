@@ -60,10 +60,10 @@ A live walkthrough scoring a phishing email and a legitimate email side by side.
   │  │  Headers   │  │   Content    │  │     URLs      │       │
   │  │ SPF/DKIM   │  │ Urgency lang │  │ Unshorten→    │       │
   │  │ DMARC      │  │ Credentials  │  │  analyze real │       │
-  │  │ Spoofing   │  │ Financial    │  │ Bad domain    │       │
-  │  │ Lookalike  │  │ Ransomware   │  │ text≠href     │       │
+  │  │ Spoofing   │  │ Financial    │  │ IP / TLD      │       │
+  │  │ Lookalike  │  │ Threats      │  │ text≠href     │       │
   │  └────────────┘  │ QR/CAPTCHA   │  │ Base64 score  │       │
-  │                  │ Sextortion   │  └───────────────┘       │
+  │                  │ LLM fallback │  └───────────────┘       │
   │  ┌────────────┐  └──────────────┘                          │
   │  │Attachments │                                            │
   │  │ exe/iso    │  ┌──────────────────────────────────────┐  │
@@ -85,7 +85,7 @@ A live walkthrough scoring a phishing email and a legitimate email side by side.
 ┌─────────────────────────────────────────────────────┐
 │                Score Aggregator                     │
 │       final = rule_score×0.6 + llm_score×0.4        │
-│   SPF+DKIM+DMARC pass & no hard evidence → Safe cap │
+│   Verdict from score only — no floors or caps       │
 │   LLM unavailable → rule engine only (deterministic)│
 │                                                     │
 │   0–30  → ✅ Safe                                   │
@@ -120,12 +120,10 @@ A live walkthrough scoring a phishing email and a legitimate email side by side.
 | 12 | `credential_phishing` | "confirm your details", "verify your account" | Email requests login credentials or personal verification |
 | 13 | `urgency_language` | "act now", "expires in 24h" | Pressure designed to bypass critical thinking |
 | 14 | `financial_lure` | gift card, bitcoin, lottery | Financial bait to manipulate the recipient |
-| 15 | `ransomware` | "your files are encrypted", "pay to recover" | Ransom demand — files held hostage |
-| 16 | `sextortion` | "I recorded you", "pay or I'll share" | Extortion using fabricated or stolen compromising material |
-| 17 | `double_extension` | invoice.pdf.exe | Looks like a document, executes as code |
-| 18 | `mime_mismatch` | Extension .pdf, MIME: application/javascript | File is not what its extension claims |
-| 19 | `dangerous_attachment` | .exe, .ps1, .iso, .hta | File type that directly executes code |
-| 20 | `virustotal_malicious` | SHA-256 known to VirusTotal | 3+ AV engines have flagged this exact file |
+| 15 | `double_extension` | invoice.pdf.exe | Looks like a document, executes as code |
+| 16 | `mime_mismatch` | Extension .pdf, MIME: application/javascript | File is not what its extension claims |
+| 17 | `dangerous_attachment` | .exe, .ps1, .iso, .hta | File type that directly executes code |
+| 18 | `virustotal_malicious` | SHA-256 known to VirusTotal | 3+ AV engines have flagged this exact file |
 
 ---
 
@@ -133,11 +131,11 @@ A live walkthrough scoring a phishing email and a legitimate email side by side.
 
 | Category | Signal | Severity | Score |
 |---|---|---|---|
-| **Headers** | `spf_fail` — SPF check failed | High | +25 |
-| | `spf_missing` — no SPF record (penalized only for untrusted senders) | Medium | +10 |
-| | `dkim_fail` — DKIM signature invalid | High | +20 |
-| | `dkim_missing` — no DKIM (penalized only for untrusted senders) | Low | +8 |
-| | `dmarc_fail` — DMARC policy failed | High | +20 |
+| **Headers** | `spf_fail` — SPF check failed (breaks on forwarding — weak) | Low | +5 |
+| | `spf_missing` — no SPF record | Medium | +15 |
+| | `dkim_fail` — DKIM signature invalid | High | +30 |
+| | `dkim_missing` — no DKIM signature | Low | +8 |
+| | `dmarc_fail` — DMARC policy failed | High | +30 |
 | | `reply_to_mismatch` — Reply-To domain differs from From domain | High | +20 |
 | | `display_name_spoofing` — "PayPal" \<attacker@gmail.com\> | High | +35 |
 | | `lookalike_domain` — arnazon.com, miсrosoft.com, paypa1.com | High | +30 |
@@ -147,17 +145,9 @@ A live walkthrough scoring a phishing email and a legitimate email side by side.
 | | `threat_language` — "legal action", "account will be deleted" | High | +20 |
 | | `qr_code_lure` — "scan this QR code" (hides destination URL) | Medium | +20 |
 | | `captcha_lure` — CAPTCHA in email body (hides phishing page from scanners) | Medium | +20 |
-| | `ransomware` — "files encrypted", "pay to recover", "decryption key" | High | +40 |
-| | `sextortion` — "I recorded you", "pay or I'll share" | High | +40 |
 | **URLs** | `url_shortener` — bit.ly, tinyurl; real destination resolved via HEAD request and analyzed | Medium | +15 |
 | | `suspicious_tld` — .xyz, .top, .click, .loan, .tk, .ml, .gq | High | +20 |
 | | `ip_url` — http://185.x.x.x (no legitimate domain) | High | +25 |
-| | `http_url` — unencrypted links | Low | +10 |
-| | `known_bad_domain` — matches threat-intel feed | High | +40 |
-| | `phishing_keyword_domain` — domain contains login, verify, secure, account... | Medium | +20 |
-| | `long_url` — URL over 100 chars (possible obfuscation) | Low | +10 |
-| | `redirect_param` — ?redirect=, ?url=, ?next= (hides final destination) | Medium | +15 |
-| | `external_domain` — sender domain ≠ link domain (no business relationship) | Medium | +15 |
 | | `link_text_mismatch` — displays "paypal.com" but href points to evil.xyz | High | +30 |
 | | `base64_payload` — HTML contains long base64-encoded content (hides malicious scripts) | High | +30 |
 | **Attachments** | `dangerous_attachment` — .exe, .js, .vbs, .bat, .ps1, .iso, .jar | High | +40 |
@@ -171,10 +161,9 @@ A live walkthrough scoring a phishing email and a legitimate email side by side.
 | | `llm_urgency` — extreme urgency (level 3) or moderate (level 2) | Medium/High | +8/+15 |
 | | `llm_suspicious_elements` — AI observations, up to 3 items shown | Medium | — |
 
-> The LLM judges **content only** (wording, intent, links) — it is not given the
-> sender, domain or authentication, so it no longer produces an impersonation
-> signal. Sender/domain/authentication and impersonation are the deterministic
-> rule engine's job. Every finding carries a `source` (`rule` or `llm`) and the UI
+> The LLM judges **subject + body text only** (wording, intent) — it is not given
+> links, attachments, the sender, domain or authentication. Those are the
+> deterministic rule engine's job. Every finding carries a `source` (`rule` or `llm`) and the UI
 > groups them accordingly.
 
 ---
@@ -227,7 +216,7 @@ The current approach catches known malware via VirusTotal hash lookup but misses
 
 Rule engines are deterministic and explainable — every signal maps to a concrete observation with a fixed score. LLMs understand context and nuance that rules miss (e.g., tone, intent, novel phishing narratives, social engineering with friendly language). The rule/LLM split is 60/40, keeping the system explainable by default while benefiting from AI analysis.
 
-The LLM is deliberately scoped to **content only** — wording, intent and the links in the body. It is **not** given the sender, domain or authentication headers, because it has no ground truth for which domain is a brand's "official" one and would over-call impersonation on legitimate third-party senders (recruiting/ESP platforms that send from branded subdomains). Everything verifiable — authentication, sender/domain, spoofing, impersonation, URL and attachment reputation — is the deterministic rule engine's job.
+The LLM is deliberately scoped to **subject + body text only** — wording and intent. It is **not** given links, attachments, the sender, domain or authentication headers (fewer tokens), because it has no ground truth for which domain is a brand's "official" one and would over-call impersonation on legitimate third-party senders (recruiting/ESP platforms that send from branded subdomains). Everything verifiable — authentication, sender/domain, spoofing, lookalike domains, URL and attachment reputation — is the deterministic rule engine's job.
 
 ### Why can't the LLM move the score on its own?
 

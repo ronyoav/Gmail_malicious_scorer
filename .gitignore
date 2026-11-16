@@ -441,3 +441,7 @@ venv/
 
 triage_out/
 samples/
+
+# clasp (Apps Script) — generated in CI from secrets; local creds stay off git
+.clasp.json
+.clasprc.json

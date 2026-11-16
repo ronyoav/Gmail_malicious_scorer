@@ -2,8 +2,10 @@ name: CI / CD
 
 # CI runs on every push and PR. CD (deploy) runs only after CI passes on `main`:
 # it rebuilds the app bundle, uploads it to the S3 bucket Terraform created, and
-# rolls the Auto Scaling Group so new instances pull the new code. Infrastructure
-# changes stay manual (terraform apply) — this pipeline ships application code only.
+# rolls the Auto Scaling Group so new instances pull the new code. A second CD job
+# pushes the Gmail add-on (addon/) to Apps Script via clasp, so the UI ships from
+# the same pipeline. Infrastructure changes stay manual (terraform apply) — this
+# pipeline ships application code only.
 
 on:
   push:
@@ -71,3 +73,35 @@ jobs:
             --auto-scaling-group-name "${PROJECT}-asg" \
             --preferences MinHealthyPercentage=50,InstanceWarmup=120
           echo "Instance refresh started — new EC2s will boot and pull app.zip."
+
+  deploy-addon:
+    name: CD — ship Gmail add-on to Apps Script
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install clasp
+        run: npm install -g @google/clasp@2.4.2
+
+      - name: Authenticate clasp
+        # CLASP_CREDENTIALS is the full contents of the ~/.clasprc.json produced by a
+        # local `clasp login` (holds the OAuth refresh token). Stored as a repo secret.
+        run: printf '%s' "${{ secrets.CLASP_CREDENTIALS }}" > "$HOME/.clasprc.json"
+
+      - name: Point clasp at the add-on project
+        # APPS_SCRIPT_ID is the script's ID (Apps Script editor → Project Settings).
+        # Generated here so the id lives in secrets, not in the repo.
+        run: |
+          cat > addon/.clasp.json <<EOF
+          { "scriptId": "${{ secrets.APPS_SCRIPT_ID }}", "rootDir": "." }
+          EOF
+
+      - name: Push add-on to Apps Script (HEAD)
+        run: clasp push -f
+        working-directory: addon

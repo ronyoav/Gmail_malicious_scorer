@@ -75,3 +75,9 @@ variable "ssm_param_prefix" {
   type        = string
   default     = "/phishing-scorer"
 }
+
+variable "alert_email" {
+  description = "Email to receive CloudWatch alarm notifications (via SNS). Leave empty to create the SNS topic with no subscriber. Supply at apply time, e.g. -var=\"alert_email=you@example.com\"; not committed."
+  type        = string
+  default     = ""
+}

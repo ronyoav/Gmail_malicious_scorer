@@ -5,7 +5,7 @@ Deploys the phishing scorer as a highly-available, observable web app on AWS:
 ```
 Internet ─▶ ALB ─▶ Auto Scaling Group (2× EC2, 2 AZs) ─▶ RDS Postgres (Multi-AZ)
                                                         └▶ ElastiCache Redis
-                        CloudWatch: metrics · logs · dashboard · alarms
+                        CloudWatch: metrics · logs · dashboard · alarms ─▶ SNS email
                         SSM: Session Manager (shell) + Parameter Store (secrets)
 ```
 
@@ -15,7 +15,8 @@ Internet ─▶ ALB ─▶ Auto Scaling Group (2× EC2, 2 AZs) ─▶ RDS Postgr
 - **Auto Scaling Group** of 2 `t3.micro` running the FastAPI app (systemd `scorer.service`).
 - **RDS Postgres**, Multi-AZ, private, encrypted.
 - **ElastiCache Redis**, single node, private.
-- **CloudWatch** dashboard + 3 alarms (CPU, unhealthy hosts, 5xx) + app log group.
+- **CloudWatch** dashboard + 4 alarms (CPU, unhealthy hosts, 5xx, response latency > 2s) + app log group.
+- **SNS** alerts topic — every alarm publishes to it; pass `-var="alert_email=you@example.com"` at apply time to receive email notifications (confirm the subscription link AWS sends).
 - **IAM** instance role: SSM Session Manager, CloudWatch agent, read app SSM params, read app S3 bundle.
 
 ## Prerequisites
@@ -59,7 +60,8 @@ terraform destroy
   RDS cost while iterating.
 - `NAT Gateway` is deliberately avoided (~$32/mo).
 
-## Not yet wired (app-side follow-ups)
-- The app does not yet **write scan history to RDS** or serve a **web UI** — those are small code
-  additions on top of this infrastructure (`DATABASE_URL` is already provided to the app via SSM).
-- The live Gmail add-on still needs the new header fields to benefit from the latest detector work.
+## Follow-ups
+- **TLS/HTTPS**: the ALB listens on port 80 only. Production should add an ACM certificate and an
+  HTTPS listener (and redirect 80 → 443) so email content isn't sent in the clear.
+- **App delivery is a one-shot `apply`**: code is zipped to S3 at apply time; there is no CI/CD, so
+  updating the app means re-running `apply` and recycling the instances.

@@ -92,15 +92,19 @@ jobs:
       - name: Authenticate clasp
         # CLASP_CREDENTIALS is the full contents of the ~/.clasprc.json produced by a
         # local `clasp login` (holds the OAuth refresh token). Stored as a repo secret.
-        run: printf '%s' "${{ secrets.CLASP_CREDENTIALS }}" > "$HOME/.clasprc.json"
+        # Passed via env — never inlined — so the JSON's own quotes are not re-parsed
+        # by the shell, which would corrupt the file.
+        env:
+          CLASP_CREDENTIALS: ${{ secrets.CLASP_CREDENTIALS }}
+        run: printf '%s' "$CLASP_CREDENTIALS" > "$HOME/.clasprc.json"
 
       - name: Point clasp at the add-on project
         # APPS_SCRIPT_ID is the script's ID (Apps Script editor → Project Settings).
         # Generated here so the id lives in secrets, not in the repo.
+        env:
+          APPS_SCRIPT_ID: ${{ secrets.APPS_SCRIPT_ID }}
         run: |
-          cat > addon/.clasp.json <<EOF
-          { "scriptId": "${{ secrets.APPS_SCRIPT_ID }}", "rootDir": "." }
-          EOF
+          printf '{ "scriptId": "%s", "rootDir": "." }\n' "$APPS_SCRIPT_ID" > addon/.clasp.json
 
       - name: Push add-on to Apps Script (HEAD)
         run: clasp push -f

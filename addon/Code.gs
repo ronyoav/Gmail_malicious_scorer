@@ -1,5 +1,5 @@
 // Single place to point the add-on at a backend deployment
-var BACKEND_BASE_URL = "https://degrees-assigned-currently-screw.trycloudflare.com";
+var BACKEND_BASE_URL = "http://phishing-scorer-alb-2063445221.eu-central-1.elb.amazonaws.com";
 var BACKEND_URL = BACKEND_BASE_URL + "/api/v1/analyze";
 
 function onGmailMessage(e) {

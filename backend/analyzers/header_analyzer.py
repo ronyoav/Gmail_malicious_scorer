@@ -139,17 +139,27 @@ def analyze_headers(headers: EmailHeaders) -> tuple[int, list[Signal]]:
                 score += pts
                 signals.append(Signal(type=stype, severity="high", description=desc))
 
-    # Reply-To mismatch
+    # Reply-To mismatch. This is a WEAK signal: legitimate mail sent via a service
+    # (newsletters, transactional mail) routinely routes replies to a different
+    # mailbox. It only matters when the From domain is not authenticated.
     if headers.from_address and headers.reply_to:
-        from_domain = _extract_domain(headers.from_address)
-        reply_domain = _extract_domain(headers.reply_to)
-        if from_domain and reply_domain and from_domain != reply_domain:
-            score += 20
-            signals.append(Signal(
-                type="reply_to_mismatch",
-                severity="high",
-                description=f"Reply-To domain ({reply_domain}) differs from From domain ({from_domain}).",
-            ))
+        from_reg = registrable_domain(_extract_domain(headers.from_address))
+        reply_reg = registrable_domain(_extract_domain(headers.reply_to))
+        if from_reg and reply_reg and from_reg != reply_reg:
+            dmarc_pass = bool(headers.dmarc and "pass" in headers.dmarc.lower())
+            if dmarc_pass:
+                signals.append(Signal(
+                    type="reply_to_mismatch",
+                    severity="low",
+                    description=f"Reply-To domain ({reply_reg}) differs from the authenticated From domain ({from_reg}) — common for mail sent via a service.",
+                ))
+            else:
+                score += 10
+                signals.append(Signal(
+                    type="reply_to_mismatch",
+                    severity="medium",
+                    description=f"Reply-To domain ({reply_reg}) differs from From domain ({from_reg}).",
+                ))
 
     # Display name spoofing: "PayPal <attacker@gmail.com>"
     if headers.from_address:

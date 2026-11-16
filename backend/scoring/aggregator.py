@@ -24,7 +24,7 @@ _STRONG_EVIDENCE = {
     "known_bad_domain", "ip_url", "link_text_mismatch", "base64_payload",
     "suspicious_tld", "virustotal_malicious", "virustotal_suspicious",
     "vt_url_malicious", "vt_domain_malicious", "new_domain",
-    "spf_fail", "dkim_fail", "dmarc_fail", "reply_to_mismatch",
+    "spf_fail", "dkim_fail", "dmarc_fail",
     "display_name_spoofing", "lookalike_domain",
     "ransomware", "sextortion",
 }

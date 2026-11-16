@@ -15,14 +15,15 @@ _HIGH_RISK_MIME_TYPES = {
     "application/x-iso9660-image",
 }
 
-# Office formats and PDFs can carry macros or exploits — medium risk
+# Macro-capable Office formats (and RTF, an OLE exploit vector) — medium risk.
+# PDFs are handled separately as low risk: they are extremely common in
+# legitimate mail and cannot carry Office macros.
 _MEDIUM_RISK_EXTENSIONS = {
     ".doc", ".docm", ".xls", ".xlsm", ".ppt", ".pptm",
-    ".pdf", ".rtf", ".one", ".pub",
+    ".rtf", ".one", ".pub",
 }
 
 _MEDIUM_RISK_MIME_TYPES = {
-    "application/pdf",
     "application/msword",
     "application/vnd.ms-excel",
     "application/vnd.ms-powerpoint",
@@ -74,8 +75,12 @@ def analyze_attachments(attachments: list[AttachmentMeta]) -> tuple[int, list[Si
         signals.append(Signal(
             type="suspicious_attachment",
             severity="medium",
-            description=f"Office/PDF attachment(s) may contain macros or exploits: {names}.",
+            description=f"Macro-capable Office attachment(s) — can carry macros or exploits: {names}.",
         ))
+
+    # NOTE: a plain PDF gets no signal on type alone — PDFs are overwhelmingly
+    # legitimate, and whether THIS pdf is actually malicious is judged by its
+    # VirusTotal hash lookup (virustotal_analyzer), not by being a PDF.
 
     double_ext = [a for a in attachments if _has_double_extension(a)]
     if double_ext:

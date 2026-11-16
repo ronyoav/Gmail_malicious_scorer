@@ -1,0 +1,73 @@
+name: CI / CD
+
+# CI runs on every push and PR. CD (deploy) runs only after CI passes on `main`:
+# it rebuilds the app bundle, uploads it to the S3 bucket Terraform created, and
+# rolls the Auto Scaling Group so new instances pull the new code. Infrastructure
+# changes stay manual (terraform apply) — this pipeline ships application code only.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+env:
+  AWS_REGION: eu-central-1
+  PROJECT: phishing-scorer
+
+jobs:
+  test:
+    name: CI — detector tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"   # matches the EC2 runtime
+      - name: Install dependencies
+        run: pip install -r backend/requirements.txt pytest
+      - name: Run tests
+        run: pytest -q
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+
+  deploy:
+    name: CD — ship to AWS
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Build app bundle (same layout as Terraform's archive_file)
+        run: |
+          cd backend
+          zip -r ../app.zip . -x '*__pycache__*' '*.pyc'
+
+      - name: Find the app bucket
+        id: bucket
+        run: |
+          BUCKET=$(aws s3api list-buckets \
+            --query "Buckets[?starts_with(Name, '${PROJECT}-app-')].Name | [0]" \
+            --output text)
+          if [ -z "$BUCKET" ] || [ "$BUCKET" = "None" ]; then
+            echo "No ${PROJECT}-app-* bucket found — is the stack deployed?" >&2
+            exit 1
+          fi
+          echo "name=$BUCKET" >> "$GITHUB_OUTPUT"
+
+      - name: Upload bundle to S3
+        run: aws s3 cp app.zip "s3://${{ steps.bucket.outputs.name }}/app.zip"
+
+      - name: Roll instances to pull the new bundle
+        run: |
+          aws autoscaling start-instance-refresh \
+            --auto-scaling-group-name "${PROJECT}-asg" \
+            --preferences MinHealthyPercentage=50,InstanceWarmup=120
+          echo "Instance refresh started — new EC2s will boot and pull app.zip."

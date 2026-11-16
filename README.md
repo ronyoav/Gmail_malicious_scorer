@@ -67,13 +67,12 @@ A live walkthrough scoring a phishing email and a legitimate email side by side.
   │  ┌────────────┐  └──────────────┘                          │
   │  │Attachments │                                            │
   │  │ exe/iso    │  ┌──────────────────────────────────────┐  │
-  │  │ PDF/Office │  │  LLM (Haiku) — feature extractor     │  │
+  │  │ PDF/Office │  │  LLM (Haiku) — content-only extractor│  │
   │  │ double ext │  │                                      │  │
   │  │ MIME mis-  │  │  Returns structured JSON:            │  │
   │  │ match      │  │  • intent: credential_harvesting /   │  │
   │  └────────────┘  │            financial_fraud /         │  │
   │                  │            malware_delivery / spam   │  │
-  │                  │  • impersonation: true/false         │  │
   │                  │  • urgency_level: 0–3                │  │
   │                  │  • suspicious_elements: [...]        │  │
   │                  │                                      │  │
@@ -85,7 +84,9 @@ A live walkthrough scoring a phishing email and a legitimate email side by side.
        ▼
 ┌─────────────────────────────────────────────────────┐
 │                Score Aggregator                     │
-│       final = rule_score×0.7 + llm_score×0.3        │
+│       final = rule_score×0.6 + llm_score×0.4        │
+│   SPF+DKIM+DMARC pass & no hard evidence → Safe cap │
+│   LLM unavailable → rule engine only (deterministic)│
 │                                                     │
 │   0–30  → ✅ Safe                                   │
 │  31–60  → ⚠️  Suspicious                            │
@@ -165,11 +166,16 @@ A live walkthrough scoring a phishing email and a legitimate email side by side.
 | | `mime_mismatch` — extension says .pdf, MIME type says application/javascript | High | +35 |
 | | `virustotal_malicious` — SHA-256 flagged malicious by 3+ AV engines | High | +50 |
 | | `virustotal_suspicious` — SHA-256 flagged suspicious by 1+ AV engines | Medium | +25 |
-| **AI Analysis** | `llm_intent` — credential harvesting / financial fraud / malware delivery | High | +35–40 |
+| **AI Analysis** (content only) | `llm_intent` — credential harvesting / financial fraud / malware delivery | High | +35–40 |
 | | `llm_intent` — spam | Low | +10 |
-| | `llm_impersonation` — brand or identity impersonation detected | High | +25 |
 | | `llm_urgency` — extreme urgency (level 3) or moderate (level 2) | Medium/High | +8/+15 |
 | | `llm_suspicious_elements` — AI observations, up to 3 items shown | Medium | — |
+
+> The LLM judges **content only** (wording, intent, links) — it is not given the
+> sender, domain or authentication, so it no longer produces an impersonation
+> signal. Sender/domain/authentication and impersonation are the deterministic
+> rule engine's job. Every finding carries a `source` (`rule` or `llm`) and the UI
+> groups them accordingly.
 
 ---
 
@@ -219,11 +225,16 @@ The current approach catches known malware via VirusTotal hash lookup but misses
 
 ### Why hybrid rule engine + LLM?
 
-Rule engines are deterministic and explainable — every signal maps to a concrete observation with a fixed score. LLMs understand context and nuance that rules miss (e.g., tone, intent, novel phishing narratives, social engineering with friendly language). The 70/30 split keeps the system explainable by default while benefiting from AI analysis.
+Rule engines are deterministic and explainable — every signal maps to a concrete observation with a fixed score. LLMs understand context and nuance that rules miss (e.g., tone, intent, novel phishing narratives, social engineering with friendly language). The rule/LLM split is 60/40, keeping the system explainable by default while benefiting from AI analysis.
 
-### Why can't the LLM inflate the score?
+The LLM is deliberately scoped to **content only** — wording, intent and the links in the body. It is **not** given the sender, domain or authentication headers, because it has no ground truth for which domain is a brand's "official" one and would over-call impersonation on legitimate third-party senders (recruiting/ESP platforms that send from branded subdomains). Everything verifiable — authentication, sender/domain, spoofing, impersonation, URL and attachment reputation — is the deterministic rule engine's job.
 
-The LLM never returns a score directly. It returns structured features (intent, urgency level, impersonation flag) which are then scored by a deterministic rule engine. A prompt-injected email that tricks the LLM into saying `"score": 100` has no effect — the rule engine ignores it entirely.
+### Why can't the LLM move the score on its own?
+
+The LLM never returns a score directly. It returns structured content features (intent, urgency level, suspicious elements) which a deterministic rule engine scores. A prompt-injected email that tricks the LLM into saying `"score": 100` has no effect — the rule engine ignores it. The LLM may not move the verdict **up or down** on its own say-so: there is no "LLM says legitimate → lower the score" rule either. Only verifiable facts move the verdict:
+
+- **Authenticated sender** — when SPF, DKIM and DMARC all pass and no hard rule evidence fired, the From domain is proven not spoofed, so the score is capped in the Safe band (soft signals alone can't flag it). Malicious content/URLs/attachments are concrete evidence and override this.
+- **Deterministic fallback** — if the LLM returns no usable score, the verdict falls back to the rule engine at full weight (100% deterministic), never silently diluted by a missing LLM share.
 
 ### Prompt injection hardening
 
@@ -274,6 +285,31 @@ PII (SSN, credit cards, phone numbers) is stripped in the Gmail Add-on before th
 
 ---
 
+## Continuous delivery (CI/CD)
+
+`.github/workflows/ci-cd.yml` runs on every push:
+
+- **CI** (all branches/PRs): installs `backend/requirements.txt` and runs `pytest` —
+  the deterministic detector tests in `tests/` (authentication parsing, the
+  authentication-anchored aggregator, the LLM-unavailable fallback, lookalike
+  detection, source tagging). No API keys or AWS access needed; a regression fails
+  the build before it can ship.
+- **CD** (on `main`, after CI passes): zips `backend/` the same way Terraform's
+  `archive_file` does, uploads it to the `phishing-scorer-app-*` S3 bucket, and
+  starts an Auto Scaling Group **instance refresh** so new EC2s boot and pull the
+  new code. This is what closes the "merged but the cloud still runs old code" gap —
+  previously `terraform apply` updated S3 but existing instances only pull at boot.
+
+Application code ships through this pipeline; **infrastructure** changes still go
+through `terraform apply` by hand.
+
+**Setup** — add two repository secrets (Settings → Secrets and variables → Actions):
+`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` for an IAM user allowed to
+`s3:PutObject` on the app bucket, `s3:ListAllMyBuckets`, and
+`autoscaling:StartInstanceRefresh`.
+
+---
+
 ## Offline batch triage (`triage.py`)
 
 Runs the same backend pipeline (sanitizer → analyzers → VirusTotal → LLM → aggregator) over a folder of `.eml` files, without Gmail.
@@ -287,4 +323,4 @@ python triage.py path/to/emails/ --no-llm --no-vt         # rule engine only, of
 
 Outputs in `triage_out/`: `results.csv` (overview, sorted by score), `results.json` (full detail) and `report.md` (per-email findings + analyst-verdict fields).
 Domain reputation (`backend/analyzers/reputation_analyzer.py`, also used by the API): for the sender domain and each link domain it checks **domain age via RDAP** (free, no key) and the **VirusTotal domain report**. Results are cached per domain, and VT calls are throttled to the free-tier 4/min (`--vt-interval 15`, shared with attachment lookups). Flags: `--no-vt`, `--no-rdap`.
-If the LLM is disabled or fails, the score falls back to the rule engine alone instead of being diluted by the missing 30% LLM share.
+If the LLM is disabled or fails, the score falls back to the rule engine alone at full weight (100% deterministic) instead of being diluted by the missing LLM share.

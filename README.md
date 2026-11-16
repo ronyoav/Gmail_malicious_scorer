@@ -187,11 +187,11 @@ The trade-off accepted: zero-day malware with no prior VirusTotal history will n
 
 ---
 
-### Celery Worker Queue vs. Render Instance Scaling
+### Celery Worker Queue vs. ALB + Auto Scaling Group
 
 The scalable architecture would use Redis as a message broker with Celery workers consuming tasks from the queue — decoupling request intake from processing and handling large load spikes gracefully.
 
-This was rejected because running a Celery worker is a separate paid service on Render. Instead, the `render.yaml` is configured with a single instance of the FastAPI service, which is sufficient for the demo scope without the added infrastructure cost and complexity.
+This was rejected because a dedicated Celery worker is extra infrastructure beyond the assignment scope. Instead, the Terraform stack runs the FastAPI service on an Auto Scaling Group of 2× t3.micro behind an Application Load Balancer, which is sufficient for the demo scope without the added cost and complexity.
 
 The trade-off accepted: under extreme load the system will queue at the HTTP layer rather than at a dedicated task queue, which is less efficient but operationally simpler and free.
 
@@ -201,7 +201,7 @@ The trade-off accepted: under extreme load the system will queue at the HTTP lay
 
 ### Celery Worker Queue for True Horizontal Scaling
 
-The current setup scales by running up to 5 parallel FastAPI instances via `render.yaml`. A proper production architecture would introduce Celery with Redis as a message broker — decoupling HTTP request intake from analysis processing. This would allow workers to scale independently from the API layer and handle sustained high-volume traffic more gracefully than HTTP-layer queuing.
+The current setup scales by running 2 FastAPI instances behind an Application Load Balancer (Auto Scaling Group). A proper production architecture would introduce Celery with Redis as a message broker — decoupling HTTP request intake from analysis processing. This would allow workers to scale independently from the API layer and handle sustained high-volume traffic more gracefully than HTTP-layer queuing.
 
 ### Feedback Loop — "Report as Mistake" Button
 
@@ -263,11 +263,11 @@ PII (SSN, credit cards, phone numbers) is stripped in the Gmail Add-on before th
 | Backend | Python · FastAPI |
 | AI Analysis | Claude Haiku 4.5 (Anthropic) |
 | Threat Intel | VirusTotal API v3 |
-| Cache | Redis (Render Key Value) |
+| Cache | Redis (AWS ElastiCache) |
 | HTML parsing | BeautifulSoup4 + lxml |
 | Schema validation | Pydantic v2 |
 | Gmail Add-on | Google Apps Script |
-| Deployment | Render (auto-deploy on push to main) |
+| Deployment | AWS via Terraform (ALB + 2× EC2 ASG, RDS Postgres, ElastiCache, CloudWatch) |
 
 ---
 

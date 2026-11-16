@@ -97,7 +97,7 @@ async function post(url, payload, btn, errEl) {
   try {
     const res = await fetch(url, { method:"POST", headers:{ "Content-Type":"application/json" }, body:JSON.stringify(payload) });
     if (!res.ok) throw new Error("HTTP " + res.status);
-    render(await res.json());
+    showResult(await res.json());
     loadHistory();
   } catch (e) {
     $(errEl).textContent = "Failed: " + e.message;
@@ -125,7 +125,7 @@ function analyzeFields() {
   }, "go-fields", "err-fields");
 }
 
-function render(r) {
+function showResult(r) {
   const el = $("result");
   el.style.display = "block";
   const sigs = (r.signals || []).map(s =>

@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from backend.models.email_request import EmailAnalysisRequest, EmailAnalysisResponse
 from backend.storage import history
 from backend.ingest import parse_raw_email
+from backend import cache
 
 
 class RawEmail(BaseModel):
@@ -69,8 +70,41 @@ def analyze_raw(payload: RawEmail) -> EmailAnalysisResponse:
     return analyze_email(parse_raw_email(payload.raw))
 
 
+def _record_history(subject, sender, response: EmailAnalysisResponse) -> None:
+    """Persist a scan to RDS on a daemon thread (fire-and-forget, never blocks the
+    response). Used on both a fresh analysis and a cache hit."""
+    threading.Thread(
+        target=history.record_scan,
+        kwargs=dict(
+            subject=subject,
+            sender=sender,
+            score=response.score,
+            verdict=response.verdict,
+            verdict_label=response.verdict_label,
+            explanation=response.explanation,
+            signals=[s.model_dump() for s in response.signals],
+        ),
+        daemon=True,
+    ).start()
+
+
 @app.post("/api/v1/analyze", response_model=EmailAnalysisResponse)
 def analyze_email(request: EmailAnalysisRequest) -> EmailAnalysisResponse:
+    # Whole-email cache: an identical email seen within the TTL skips the entire
+    # pipeline (every analyzer + the rule engine), not just the LLM call. Keyed by
+    # email content (message_id excluded), so it hits across both API entry points.
+    cache_key = cache.result_key(request)
+    r = cache.get_redis()
+    if r:
+        try:
+            hit = r.get(cache_key)
+            if hit:
+                cached_response = EmailAnalysisResponse.model_validate_json(hit)
+                _record_history(request.subject, request.headers.from_address, cached_response)
+                return cached_response
+        except Exception:
+            pass
+
     # Run sanitization and VirusTotal in parallel — both are independent of each other
     with ThreadPoolExecutor(max_workers=2) as ex:
         sanitize_f = ex.submit(sanitize, request)
@@ -134,20 +168,15 @@ def analyze_email(request: EmailAnalysisRequest) -> EmailAnalysisResponse:
         signals=all_signals,
     )
 
+    # Cache the full result so a repeat of this exact email skips the pipeline.
+    if r:
+        try:
+            r.setex(cache_key, cache.RESULT_TTL, response.model_dump_json())
+        except Exception:
+            pass
+
     # Persist the scan to RDS (the "History Of Actions" indicator). Fire-and-forget
     # on a daemon thread so it never adds latency to, or fails, the response.
-    threading.Thread(
-        target=history.record_scan,
-        kwargs=dict(
-            subject=sanitized["subject"],
-            sender=sanitized["headers"].from_address,
-            score=final_score,
-            verdict=verdict,
-            verdict_label=verdict_label,
-            explanation=explanation,
-            signals=[s.model_dump() for s in all_signals],
-        ),
-        daemon=True,
-    ).start()
+    _record_history(sanitized["subject"], sanitized["headers"].from_address, response)
 
     return response

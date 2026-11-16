@@ -13,6 +13,20 @@ resource "aws_cloudwatch_log_group" "app" {
   retention_in_days = 7
 }
 
+# SNS topic that every alarm publishes to. When alert_email is set, an email
+# subscription is created (AWS sends a confirmation link that must be clicked).
+# The email is passed at apply time, never committed.
+resource "aws_sns_topic" "alerts" {
+  name = "${var.project}-alerts"
+}
+
+resource "aws_sns_topic_subscription" "email" {
+  count     = var.alert_email == "" ? 0 : 1
+  topic_arn = aws_sns_topic.alerts.arn
+  protocol  = "email"
+  endpoint  = var.alert_email
+}
+
 resource "aws_cloudwatch_metric_alarm" "high_cpu" {
   alarm_name          = "${var.project}-high-cpu"
   comparison_operator = "GreaterThanThreshold"
@@ -23,6 +37,8 @@ resource "aws_cloudwatch_metric_alarm" "high_cpu" {
   statistic           = "Average"
   threshold           = 80
   alarm_description   = "Average CPU over 80% across the app instances."
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
   dimensions          = { AutoScalingGroupName = aws_autoscaling_group.app.name }
 }
 
@@ -36,6 +52,8 @@ resource "aws_cloudwatch_metric_alarm" "unhealthy_hosts" {
   statistic           = "Maximum"
   threshold           = 1
   alarm_description   = "At least one target is failing its health check."
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
   dimensions = {
     TargetGroup  = aws_lb_target_group.app.arn_suffix
     LoadBalancer = aws_lb.app.arn_suffix
@@ -53,6 +71,25 @@ resource "aws_cloudwatch_metric_alarm" "target_5xx" {
   threshold           = 5
   alarm_description   = "App instances returning 5xx errors."
   treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+  dimensions          = { LoadBalancer = aws_lb.app.arn_suffix }
+}
+
+resource "aws_cloudwatch_metric_alarm" "high_latency" {
+  alarm_name          = "${var.project}-high-latency"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "TargetResponseTime"
+  namespace           = "AWS/ApplicationELB"
+  period              = 60
+  statistic           = "Average"
+  threshold           = 2
+  unit                = "Seconds"
+  alarm_description   = "App responses slower than 2s on average (application latency)."
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
   dimensions          = { LoadBalancer = aws_lb.app.arn_suffix }
 }
 

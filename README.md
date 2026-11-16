@@ -236,7 +236,10 @@ Known legitimate third-party senders (ATS platforms like Greenhouse, Lever, Work
 
 ### Why Redis cache?
 
-LLM calls are the only expensive operation (~500ms, ~$0.001 each). Identical emails (mass phishing campaigns) are analyzed once and served from cache for 1 hour. If Redis is unavailable, the system falls back gracefully — no crash, just no cache.
+Mass phishing campaigns send the same email to many recipients, so the same analysis runs over and over. Two layers of Redis cache (1-hour TTL) avoid the repeated work; both fall back gracefully if Redis is down (no crash, just no cache):
+
+- **Whole-email cache** (`backend/cache.py`) — keyed by the email's *identity* (sender, subject, body, URLs, attachment hashes), ignoring per-delivery noise (message_id, Reply-To, Received chain, SPF/DKIM/DMARC). A hit returns the cached result immediately and skips the **entire** pipeline. Scan history is still recorded on a hit.
+- **LLM cache** (`backend/analyzers/llm_analyzer.py`) — keyed by the sanitized prompt. Even when the whole-email cache misses because of cosmetic differences in the raw body (tracking pixels, per-recipient tokens), the sanitized content is often identical, so this still skips the single most expensive step: the Claude API call (~500ms, ~$0.001 each).
 
 ### Why does VirusTotal run in parallel with the sanitizer?
 

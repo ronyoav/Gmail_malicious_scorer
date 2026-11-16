@@ -38,6 +38,7 @@ class Signal(BaseModel):
     type: str
     severity: str  # "high" | "medium" | "low"
     description: str
+    source: str = "rule"  # "rule" (deterministic engine) | "llm" (AI content analysis)
 
 
 class EmailAnalysisResponse(BaseModel):

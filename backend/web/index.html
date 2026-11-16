@@ -25,6 +25,7 @@
   .v-safe { background:#e7f4ec; color:var(--safe); } .v-susp { background:#fbf3e3; color:var(--susp); } .v-bad { background:#fbe9e9; color:var(--bad); }
   .score { font-size:40px; font-weight:700; }
   .sig { font-size:13px; padding:6px 0; border-top:1px dashed var(--border); }
+  .ghead { font-size:11px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--muted); margin:16px 0 2px; }
   .sev { font-size:11px; font-weight:700; text-transform:uppercase; margin-right:6px; }
   .sev-high{color:var(--bad);} .sev-medium{color:var(--susp);} .sev-low{color:var(--muted);}
   table { width:100%; border-collapse:collapse; font-size:13px; }
@@ -92,19 +93,27 @@ function loadFile(input) {
   reader.readAsText(f);
 }
 
+function renderSigs(list) {
+  if (!list.length) return '<div class="muted" style="margin-top:4px">No signals.</div>';
+  return list.map(s =>
+    `<div class="sig"><span class="sev sev-${s.severity}">${s.severity}</span>${escapeHtml(s.description)}</div>`
+  ).join("");
+}
+
 function showResult(r) {
   const el = $("result");
   el.style.display = "block";
-  const sigs = (r.signals || []).map(s =>
-    `<div class="sig"><span class="sev sev-${s.severity}">${s.severity}</span>${escapeHtml(s.description)}</div>`
-  ).join("") || '<div class="muted" style="margin-top:8px">No signals.</div>';
+  const all = r.signals || [];
+  const ruleSigs = all.filter(s => (s.source || "rule") !== "llm");
+  const llmSigs  = all.filter(s => (s.source || "rule") === "llm");
   el.innerHTML =
     `<div style="display:flex;align-items:center;gap:16px">
        <div class="score">${r.score}</div>
        <span class="verdict ${vclass(r.verdict)}">${escapeHtml(r.verdict_label)}</span>
      </div>
      <p style="margin:12px 0 4px">${escapeHtml(r.explanation || "")}</p>
-     <div style="margin-top:8px">${sigs}</div>`;
+     <div class="ghead">Rule engine · deterministic</div>${renderSigs(ruleSigs)}
+     <div class="ghead">AI content analysis · LLM</div>${renderSigs(llmSigs)}`;
   el.scrollIntoView({ behavior:"smooth", block:"nearest" });
 }
 

@@ -11,7 +11,7 @@ SSM_PREFIX="${ssm_prefix}"
 LOG_GROUP="${log_group}"
 
 dnf -y update
-dnf -y install python3 python3-pip unzip amazon-cloudwatch-agent
+dnf -y install python3.11 python3.11-pip unzip amazon-cloudwatch-agent
 
 # --- fetch the app bundle from S3 -----------------------------------------
 mkdir -p /opt/app/backend /var/log/app
@@ -19,7 +19,7 @@ aws s3 cp "s3://$S3_BUCKET/app.zip" /tmp/app.zip --region "$REGION"
 unzip -o /tmp/app.zip -d /opt/app/backend
 
 # --- python environment ----------------------------------------------------
-python3 -m venv /opt/app/venv
+python3.11 -m venv /opt/app/venv
 /opt/app/venv/bin/pip install --upgrade pip
 /opt/app/venv/bin/pip install -r /opt/app/backend/requirements.txt
 /opt/app/venv/bin/pip install uvicorn
@@ -62,7 +62,7 @@ cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<EOF
   "agent": { "metrics_collection_interval": 60 },
   "metrics": {
     "namespace": "PhishingScorer",
-    "append_dimensions": { "InstanceId": "$${aws:InstanceId}" },
+    "append_dimensions": { "InstanceId": "\$${aws:InstanceId}" },
     "metrics_collected": {
       "mem": { "measurement": ["mem_used_percent"] },
       "disk": { "measurement": ["used_percent"], "resources": ["/"] }

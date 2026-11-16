@@ -3,7 +3,6 @@ import httpx
 from urllib.parse import urlparse
 from backend.models.email_request import Signal
 from backend.analyzers.allowlist import is_allowlisted
-from backend.analyzers.reputation_analyzer import registrable_domain
 
 _UNSHORTEN_TIMEOUT = 4  # seconds — fail fast
 
@@ -19,29 +18,14 @@ _SUSPICIOUS_TLDS = {
     ".ml", ".cf", ".tk", ".pw", ".su",
 }
 
-# Keywords commonly used in phishing domains to appear legitimate
-_PHISHING_KEYWORDS = re.compile(
-    r"(secure|security|login|verify|verification|account|update|confirm|"
-    r"drive|support|helpdesk|authenticate|validation|access|portal|signin)",
-    re.IGNORECASE,
-)
-
 _IP_URL_RE = re.compile(r"https?://\d{1,3}(\.\d{1,3}){3}")
 
-_REDIRECT_PARAMS = re.compile(r"[?&](redirect|url|next|return|goto|target|dest|destination|continue)=", re.IGNORECASE)
 
-_URL_LENGTH_THRESHOLD = 100
-
-# Mock domain reputation DB — in production this would be a threat-intel feed.
-_BAD_DOMAINS = {
-    "evil.com", "phish.net", "malware-site.ru", "stealcreds.tk",
-    "secure-paypal-login.xyz", "amazon-verify.top", "apple-id-locked.click",
-    "microsoft-alert.work", "netflix-billing.loan", "google-security.gq",
-    "update-your-account.ml", "verify-account-now.cf",
-}
-
-
-def analyze_urls(urls: list[str], link_mismatches: list[dict] | None = None, has_base64_payload: bool = False, sender_domain: str | None = None) -> tuple[int, list[Signal]]:
+def analyze_urls(urls: list[str], link_mismatches: list[dict] | None = None,
+                 has_base64_payload: bool = False) -> tuple[int, list[Signal]]:
+    # Only concrete URL evidence is scored. Weak structural hints (http://, long
+    # URLs, redirect params, keyword-in-domain, external domain) were removed:
+    # they fire constantly on legitimate newsletters and tracking links.
     score = 0
     signals = []
 
@@ -50,9 +34,8 @@ def analyze_urls(urls: list[str], link_mismatches: list[dict] | None = None, has
         expanded = [_unshorten(u) if _is_shortener(u) else u for u in urls]
 
         # Links on trusted infrastructure (identity providers, banks, ESP tracking
-        # links...) are not scrutinized for *structural* red flags — only untrusted
-        # destinations are. Strong signals (IP, known-bad, link mismatch) still apply
-        # to every URL. This is the main fix for legitimate-mail false positives.
+        # links...) are not checked for suspicious TLDs. Strong signals (IP,
+        # link mismatch) still apply to every URL.
         untrusted = [u for u in expanded if not is_allowlisted(_host_of(u))]
 
         # A shortener is only a concern when its real destination isn't trusted.
@@ -75,61 +58,6 @@ def analyze_urls(urls: list[str], link_mismatches: list[dict] | None = None, has
         if ip_urls:
             score += 25
             signals.append(Signal(type="ip_url", severity="high", description="URL points directly to an IP address — no legitimate domain."))
-
-        http_urls = [u for u in untrusted if u.startswith("http://")]
-        if http_urls:
-            score += 5
-            signals.append(Signal(type="http_url", severity="low", description=f"{len(http_urls)} non-HTTPS link(s) to untrusted hosts found."))
-
-        bad = [u for u in expanded if _is_bad_domain(u)]
-        if bad:
-            score += 40
-            signals.append(Signal(
-                type="known_bad_domain",
-                severity="high",
-                description=f"URL matches known malicious domain: {_extract_domain(bad[0])}.",
-            ))
-
-        keyword_domains = [u for u in untrusted if _has_phishing_keywords(u)]
-        if keyword_domains:
-            score += 15
-            example = registrable_domain(_host_of(keyword_domains[0])) or _extract_domain(keyword_domains[0])
-            signals.append(Signal(
-                type="phishing_keyword_domain",
-                severity="medium",
-                description=f"Untrusted domain '{example}' contains keywords commonly used in phishing URLs (secure, login, verify, drive, etc.).",
-            ))
-
-        long_urls = [u for u in untrusted if len(u) > _URL_LENGTH_THRESHOLD]
-        if long_urls:
-            # Informational only: legitimate tracking links are routinely long.
-            signals.append(Signal(
-                type="long_url",
-                severity="low",
-                description=f"Unusually long URL detected ({len(long_urls[0])} chars) — may indicate obfuscation.",
-            ))
-
-        redirect_urls = [u for u in untrusted if _REDIRECT_PARAMS.search(u)]
-        if redirect_urls:
-            score += 5
-            signals.append(Signal(
-                type="redirect_param",
-                severity="low",
-                description="URL to an untrusted host contains a redirect parameter (redirect=, url=, next=) — final destination may be hidden.",
-            ))
-    else:
-        expanded = []
-
-    if sender_domain and expanded:
-        external = [u for u in expanded
-                    if _is_external_to_sender(u, sender_domain) and not is_allowlisted(_host_of(u))]
-        if external:
-            score += 5
-            signals.append(Signal(
-                type="external_domain",
-                severity="low",
-                description=f"Email from '{sender_domain}' contains links to unrelated, non-trusted external domains.",
-            ))
 
     if has_base64_payload:
         score += 30
@@ -155,11 +83,7 @@ def analyze_urls(urls: list[str], link_mismatches: list[dict] | None = None, has
 
 
 def _is_shortener(url: str) -> bool:
-    try:
-        host = urlparse(url).netloc.lower().lstrip("www.")
-        return host in _SHORTENERS
-    except Exception:
-        return False
+    return _extract_domain(url) in _SHORTENERS
 
 
 def _has_suspicious_tld(url: str) -> bool:
@@ -170,28 +94,9 @@ def _has_suspicious_tld(url: str) -> bool:
         return False
 
 
-def _is_bad_domain(url: str) -> bool:
-    domain = _extract_domain(url)
-    return domain in _BAD_DOMAINS if domain else False
-
-
-def _has_phishing_keywords(url: str) -> bool:
-    domain = _extract_domain(url)
-    return bool(_PHISHING_KEYWORDS.search(domain)) if domain else False
-
-
-def _is_external_to_sender(url: str, sender_domain: str) -> bool:
-    url_domain = _extract_domain(url)
-    if not url_domain:
-        return False
-    sender_root = ".".join(sender_domain.split(".")[-2:])
-    url_root = ".".join(url_domain.split(".")[-2:])
-    return url_root != sender_root
-
-
 def _extract_domain(url: str) -> str | None:
     try:
-        return urlparse(url).netloc.lower().lstrip("www.") or None
+        return urlparse(url).netloc.lower().removeprefix("www.") or None
     except Exception:
         return None
 

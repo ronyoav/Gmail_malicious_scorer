@@ -73,8 +73,8 @@ def extract_link_mismatches(html: str) -> list[dict]:
             continue
 
         try:
-            href_domain = urlparse(href).netloc.lower().lstrip("www.")
-            text_domain = urlparse(text if text.startswith("http") else "http://" + text).netloc.lower().lstrip("www.")
+            href_domain = urlparse(href).netloc.lower().removeprefix("www.")
+            text_domain = urlparse(text if text.startswith("http") else "http://" + text).netloc.lower().removeprefix("www.")
         except Exception:
             continue
 

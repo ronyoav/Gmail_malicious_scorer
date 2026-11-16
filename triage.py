@@ -245,16 +245,16 @@ def main():
     # Mark that case with llm_score=-1 and let the aggregator fall back to rules only.
     _llm, _agg = scorer.analyze_with_llm, scorer.aggregate
 
-    def llm_or_flag(sanitized):
+    def llm_or_flag(subject, body):
         if args.no_llm:
             return -1, "LLM disabled (--no-llm) - rule engine only.", []
-        score, expl, sig = _llm(sanitized)
+        score, expl, sig = _llm(subject, body)
         if expl.startswith("AI analysis unavailable"):
             return -1, expl + " - rule engine only.", sig
         return score, expl, sig
 
     scorer.analyze_with_llm = llm_or_flag
-    scorer.aggregate = lambda rule, llm, sig: _agg(rule, rule if llm < 0 else llm, sig)
+    scorer.aggregate = lambda rule, llm, available=True: _agg(rule, llm, available and llm >= 0)
     files = collect(args.inputs)
     if not files:
         sys.exit("No input files found.")

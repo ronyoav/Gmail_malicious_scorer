@@ -15,20 +15,20 @@ _CACHE_TTL = 3600  # seconds
 # accuracy for lower cost/latency.
 _MODEL = os.environ.get("LLM_MODEL", "claude-haiku-4-5-20251001")
 
-_REDIS: redis.Redis | None = None
+_CACHE: redis.Redis | None = None
 
 
-def _get_redis() -> redis.Redis | None:
-    global _REDIS
-    if _REDIS is None:
+def _get_cache() -> redis.Redis | None:
+    global _CACHE
+    if _CACHE is None:
         url = os.environ.get("REDIS_URL")
         if url:
             try:
-                _REDIS = redis.Redis.from_url(url, decode_responses=True, socket_connect_timeout=2)
-                _REDIS.ping()
+                _CACHE = redis.Redis.from_url(url, decode_responses=True, socket_connect_timeout=2)
+                _CACHE.ping()
             except Exception:
-                _REDIS = None
-    return _REDIS
+                _CACHE = None
+    return _CACHE
 
 
 def _cache_key(prompt: str) -> str:
@@ -116,11 +116,11 @@ def analyze_with_llm(subject: str, body: str) -> tuple[int, str, list[Signal]]:
     Returns (llm_score 0-100, explanation, signals).
     Receives the sanitized subject and body only.
     LLM acts as a feature extractor — rule engine scores the features.
-    Results are cached in Redis by prompt hash to avoid redundant API calls.
+    Results are cached in ElastiCache by prompt hash to avoid redundant API calls.
     """
     prompt = _build_prompt(subject, body)
     cache_key = _cache_key(prompt)
-    r = _get_redis()
+    r = _get_cache()
 
     if r:
         try:

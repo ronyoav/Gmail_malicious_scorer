@@ -10,7 +10,7 @@ load_dotenv()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from backend.models.email_request import EmailAnalysisRequest, EmailAnalysisResponse
@@ -47,7 +47,20 @@ _INDEX_HTML = Path(__file__).parent / "web" / "index.html"
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    """Deep readiness check used by the ALB target group. Reports each dependency
+    and returns 503 when a *configured* dependency (DATABASE_URL / REDIS_URL set)
+    is unreachable, so a half-broken instance is pulled from rotation and the
+    unhealthy-host alarm fires. A dependency that is intentionally off (no URL,
+    e.g. local dev) reports "disabled" and stays healthy."""
+    components = {
+        "database": history.ping(),
+        "elasticache": cache.ping(),
+    }
+    down = [name for name, status in components.items() if status == "down"]
+    body = {"status": "degraded" if down else "ok", "components": components}
+    if down:
+        return JSONResponse(status_code=503, content=body)
+    return body
 
 
 @app.get("/")
@@ -94,7 +107,7 @@ def analyze_email(request: EmailAnalysisRequest) -> EmailAnalysisResponse:
     # pipeline (every analyzer + the rule engine), not just the LLM call. Keyed by
     # email content (message_id excluded), so it hits across both API entry points.
     cache_key = cache.result_key(request)
-    r = cache.get_redis()
+    r = cache.get_cache()
     if r:
         try:
             hit = r.get(cache_key)

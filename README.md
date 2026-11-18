@@ -27,7 +27,7 @@ A live walkthrough scoring a phishing email and a legitimate email side by side.
                      │   urls, attachments[{name,mime,sha256}] }
                      ▼
        ┌─────────────────────────────────────────┐
-       │  Redis Cache Check                      │
+       │  ElastiCache Check                      │
        │  hash(email content) → cache hit?       │
        │  YES → return cached result immediately │
        │  NO  → continue to Phase 2              │
@@ -234,9 +234,9 @@ The LLM system prompt explicitly instructs the model that all email content is u
 Known legitimate third-party senders (ATS platforms like Greenhouse, Lever, Workday; email marketing services like SendGrid, Mailchimp, HubSpot; cloud providers) are whitelisted. Missing SPF/DKIM records are expected and not penalized for these senders, eliminating false positives on legitimate HR and transactional emails.
 
 
-### Why Redis cache?
+### Why ElastiCache?
 
-Mass phishing campaigns send the same email to many recipients, so the same analysis runs over and over. Two layers of Redis cache (1-hour TTL) avoid the repeated work; both fall back gracefully if Redis is down (no crash, just no cache):
+Mass phishing campaigns send the same email to many recipients, so the same analysis runs over and over. Two layers of ElastiCache (1-hour TTL) avoid the repeated work; both fall back gracefully if ElastiCache is down (no crash, just no cache):
 
 - **Whole-email cache** (`backend/cache.py`) — keyed by the email's *identity* (sender, subject, body, URLs, attachment hashes), ignoring per-delivery noise (message_id, Reply-To, Received chain, SPF/DKIM/DMARC). A hit returns the cached result immediately and skips the **entire** pipeline. Scan history is still recorded on a hit.
 - **LLM cache** (`backend/analyzers/llm_analyzer.py`) — keyed by the sanitized prompt. Even when the whole-email cache misses because of cosmetic differences in the raw body (tracking pixels, per-recipient tokens), the sanitized content is often identical, so this still skips the single most expensive step: the Claude API call (~500ms, ~$0.001 each).
@@ -266,7 +266,7 @@ PII (SSN, credit cards, phone numbers) is stripped in the Gmail Add-on before th
 | Backend | Python · FastAPI |
 | AI Analysis | Claude Haiku 4.5 (Anthropic) |
 | Threat Intel | VirusTotal API v3 |
-| Cache | Redis (AWS ElastiCache) |
+| Cache | AWS ElastiCache (Redis) |
 | HTML parsing | BeautifulSoup4 + lxml |
 | Schema validation | Pydantic v2 |
 | Gmail Add-on | Google Apps Script |

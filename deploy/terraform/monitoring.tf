@@ -218,6 +218,7 @@ resource "aws_cloudwatch_metric_alarm" "high_disk" {
     id          = "max_disk"
     label       = "Max disk used % across instances"
     return_data = true
+    period      = 60 # SEARCH-based math has no raw metric to derive the period from
     expression  = "MAX(SEARCH('Namespace=\"PhishingScorer\" MetricName=\"disk_used_percent\"', 'Average', 60))"
   }
 }

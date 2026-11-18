@@ -5,7 +5,8 @@
 #   - requests at the LB     -> AWS/ApplicationELB RequestCount
 #   - success vs failure     -> HTTPCode_Target_2XX/4XX/5XX
 #   - where logs live        -> this log group (streamed by the CloudWatch agent)
-# Plus one dashboard and three alarms.
+#   - app-level errors       -> log metric filter (ERROR/Exception/Traceback) + alarm
+# Plus one dashboard and five alarms.
 # ---------------------------------------------------------------------------
 
 resource "aws_cloudwatch_log_group" "app" {
@@ -93,6 +94,62 @@ resource "aws_cloudwatch_metric_alarm" "high_latency" {
   dimensions          = { LoadBalancer = aws_lb.app.arn_suffix }
 }
 
+# Application-level errors, straight from the logs. HTTP 5xx only catches failures
+# that reach the ALB as a 5xx; this catches ERROR / Exception / Traceback lines the
+# app writes (e.g. a background DB insert failing, an analyzer raising) even when the
+# request itself returned 200. The CloudWatch agent streams stdout/stderr into the
+# app log group, so these lines are already there.
+resource "aws_cloudwatch_log_metric_filter" "app_errors" {
+  name           = "${var.project}-app-errors"
+  log_group_name = aws_cloudwatch_log_group.app.name
+  pattern        = "?ERROR ?Exception ?Traceback" # OR-match any of these terms
+
+  metric_transformation {
+    name          = "AppErrorCount"
+    namespace     = "PhishingScorer" # same custom namespace as the agent's mem metric
+    value         = "1"
+    default_value = 0
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "app_errors" {
+  alarm_name          = "${var.project}-app-errors"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "AppErrorCount"
+  namespace           = "PhishingScorer"
+  period              = 60
+  statistic           = "Sum"
+  threshold           = 0 # any error line in a 60s window alerts; raise if too noisy
+  alarm_description   = "Application-level errors in the logs (ERROR/Exception/Traceback), not just HTTP 5xx."
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+}
+
+# Root volume filling up (e.g. /var/log/app/app.log grows unbounded — no logrotate).
+# disk_used_percent is a per-instance metric (InstanceId/device/fstype/path dimensions),
+# and instances come and go in the ASG, so a fixed-dimension alarm would go stale. Instead
+# a metric-math SEARCH gathers disk_used_percent across every instance and MAX() collapses
+# it to one series — the alarm fires if ANY instance's root volume crosses the threshold.
+resource "aws_cloudwatch_metric_alarm" "high_disk" {
+  alarm_name          = "${var.project}-high-disk"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  threshold           = 85
+  alarm_description   = "Root volume over 85% full on at least one app instance."
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+
+  metric_query {
+    id          = "max_disk"
+    label       = "Max disk used % across instances"
+    return_data = true
+    expression  = "MAX(SEARCH('Namespace=\"PhishingScorer\" MetricName=\"disk_used_percent\"', 'Average', 60))"
+  }
+}
+
 resource "aws_cloudwatch_dashboard" "main" {
   dashboard_name = "${var.project}-dashboard"
 
@@ -139,16 +196,28 @@ resource "aws_cloudwatch_dashboard" "main" {
       {
         type = "metric", x = 12, y = 6, width = 12, height = 6,
         properties = {
-          title  = "Memory used % (CloudWatch agent)",
+          title  = "Memory & disk used % (CloudWatch agent)",
           region = var.region,
           view   = "timeSeries",
           metrics = [
-            ["PhishingScorer", "mem_used_percent", { stat = "Average" }]
+            ["PhishingScorer", "mem_used_percent", { stat = "Average", label = "memory" }],
+            [".", "disk_used_percent", { stat = "Average", label = "disk /" }]
           ]
         }
       },
       {
-        type = "log", x = 0, y = 12, width = 24, height = 6,
+        type = "metric", x = 0, y = 12, width = 24, height = 4,
+        properties = {
+          title  = "App-level errors (logs)",
+          region = var.region,
+          view   = "timeSeries",
+          metrics = [
+            ["PhishingScorer", "AppErrorCount", { stat = "Sum", label = "ERROR / Exception / Traceback" }]
+          ]
+        }
+      },
+      {
+        type = "log", x = 0, y = 16, width = 24, height = 6,
         properties = {
           title  = "Application logs",
           region = var.region,

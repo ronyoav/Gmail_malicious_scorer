@@ -200,27 +200,25 @@ resource "aws_cloudwatch_metric_alarm" "app_errors" {
 }
 
 # Root volume filling up (e.g. /var/log/app/app.log grows unbounded — no logrotate).
-# disk_used_percent is a per-instance metric (InstanceId/device/fstype/path dimensions),
-# and instances come and go in the ASG, so a fixed-dimension alarm would go stale. Instead
-# a metric-math SEARCH gathers disk_used_percent across every instance and MAX() collapses
-# it to one series — the alarm fires if ANY instance's root volume crosses the threshold.
+# disk_used_percent is per-instance (InstanceId changes as the ASG cycles), and SEARCH
+# expressions are NOT allowed in alarms — only on dashboards. So the CloudWatch agent
+# (see user_data.sh) aggregates the metric to a single AutoScalingGroupName series via
+# aggregation_dimensions. statistic=Maximum over that series = the worst instance, so
+# the alarm fires if ANY instance's root volume crosses the threshold.
 resource "aws_cloudwatch_metric_alarm" "high_disk" {
   alarm_name          = "${var.project}-high-disk"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 1
+  metric_name         = "disk_used_percent"
+  namespace           = "PhishingScorer"
+  period              = 60
+  statistic           = "Maximum"
   threshold           = 85
   alarm_description   = "Root volume over 85% full on at least one app instance."
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
   ok_actions          = [aws_sns_topic.alerts.arn]
-
-  metric_query {
-    id          = "max_disk"
-    label       = "Max disk used % across instances"
-    return_data = true
-    period      = 60 # SEARCH-based math has no raw metric to derive the period from
-    expression  = "MAX(SEARCH('Namespace=\"PhishingScorer\" MetricName=\"disk_used_percent\"', 'Average', 60))"
-  }
+  dimensions          = { AutoScalingGroupName = aws_autoscaling_group.app.name }
 }
 
 # ---------------------------------------------------------------------------
@@ -387,8 +385,8 @@ resource "aws_cloudwatch_dashboard" "main" {
           region = var.region,
           view   = "timeSeries",
           metrics = [
-            ["PhishingScorer", "mem_used_percent", { stat = "Average", label = "memory" }],
-            [".", "disk_used_percent", { stat = "Average", label = "disk /" }]
+            ["PhishingScorer", "mem_used_percent", "AutoScalingGroupName", aws_autoscaling_group.app.name, { stat = "Average", label = "memory" }],
+            [".", "disk_used_percent", ".", ".", { stat = "Maximum", label = "disk / (worst instance)" }]
           ]
         }
       },

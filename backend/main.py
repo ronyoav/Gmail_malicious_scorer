@@ -1,4 +1,6 @@
+import json
 import os
+import queue
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -10,7 +12,7 @@ load_dotenv()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from backend.models.email_request import EmailAnalysisRequest, EmailAnalysisResponse
@@ -101,8 +103,51 @@ def _record_history(subject, sender, response: EmailAnalysisResponse) -> None:
     ).start()
 
 
+@app.post("/api/v1/analyze-raw/stream")
+def analyze_raw_stream(payload: RawEmail) -> StreamingResponse:
+    """Same as /analyze-raw, but streams NDJSON progress for the web UI: one
+    `signals` event per deterministic analyzer as soon as it finishes, an `llm`
+    event when the AI step starts, then a final `result` event with the score."""
+    request = parse_raw_email(payload.raw)
+    events: queue.Queue = queue.Queue()
+
+    def worker():
+        try:
+            response = _analyze(request, events.put)
+            events.put({"type": "result", **response.model_dump()})
+        except Exception as e:
+            print(f"Streaming analysis error: {e}")
+            events.put({"type": "error", "message": "Analysis failed."})
+        finally:
+            events.put(None)  # end-of-stream sentinel
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    def lines():
+        while (event := events.get()) is not None:
+            yield json.dumps(event) + "\n"
+
+    return StreamingResponse(lines(), media_type="application/x-ndjson")
+
+
 @app.post("/api/v1/analyze", response_model=EmailAnalysisResponse)
 def analyze_email(request: EmailAnalysisRequest) -> EmailAnalysisResponse:
+    return _analyze(request)
+
+
+def _analyze(request: EmailAnalysisRequest, emit=None) -> EmailAnalysisResponse:
+    """Full pipeline. `emit`, when given, receives progress events (thread-safe
+    callable) so the streaming endpoint can show deterministic results early."""
+    def emit_signals(source, signals):
+        if emit and signals:
+            emit({"type": "signals", "source": source, "signals": [s.model_dump() for s in signals]})
+
+    def stream(source, future):
+        # Emit an analyzer's signals the moment its future completes.
+        future.add_done_callback(
+            lambda f: emit_signals(source, f.result()[1]) if not f.exception() else None)
+        return future
+
     # Whole-email cache: an identical email seen within the TTL skips the entire
     # pipeline (every analyzer + the rule engine), not just the LLM call. Keyed by
     # email content (message_id excluded), so it hits across both API entry points.
@@ -124,6 +169,7 @@ def analyze_email(request: EmailAnalysisRequest) -> EmailAnalysisResponse:
         vt_f = ex.submit(analyze_with_virustotal, request.attachments)
     sanitized = sanitize_f.result()
     vt_score, vt_signals = vt_f.result()
+    emit_signals("virustotal_files", vt_signals)
 
     # Extract sender domain for URL cross-referencing (e.g. link spoofing detection)
     sender_domain = None
@@ -139,51 +185,66 @@ def analyze_email(request: EmailAnalysisRequest) -> EmailAnalysisResponse:
         except (TypeError, ValueError):
             as_of = None
 
-    # Run all analyzers concurrently; LLM runs alongside rule-based checks
+    # Rule analyzers start immediately. The LLM is gated on VirusTotal: a malicious
+    # VT verdict (file or link) already decides the email, so the LLM call — the
+    # slowest and only paid step — is skipped entirely in that case.
     with ThreadPoolExecutor(max_workers=7) as ex:
         #TODO: make sure check spf,dkim, dmarc
-        header_f = ex.submit(analyze_headers, sanitized["headers"])
+        header_f = stream("headers", ex.submit(analyze_headers, sanitized["headers"]))
         #url shortener, suspicious tld, ip url, base64 payload, link text mismatch
-        url_f = ex.submit(analyze_urls, sanitized["urls"], sanitized["link_mismatches"], sanitized["has_base64_payload"])
-        #check files with virus total API call
-        attachment_f = ex.submit(analyze_attachments, sanitized["attachments"])
-        # LLM judges subject + body only (fewer tokens); links/sender are rule-engine checks
-        llm_f = ex.submit(analyze_with_llm, sanitized["subject"], sanitized["body"])
+        url_f = stream("urls", ex.submit(analyze_urls, sanitized["urls"], sanitized["link_mismatches"], sanitized["has_base64_payload"]))
+        attachment_f = stream("attachments", ex.submit(analyze_attachments, sanitized["attachments"]))
         #domain age - API call to external service
-        rep_f = ex.submit(analyze_reputation, sender_domain, sanitized["urls"], as_of)
-        # check url with API to VirusTotal
-        vt_url_f = ex.submit(analyze_urls_with_virustotal, sanitized["urls"])
+        rep_f = stream("reputation", ex.submit(analyze_reputation, sender_domain, sanitized["urls"], as_of))
+
+        # File VT verdict is already known — only look up links if it was clean.
+        vt_malicious = any(s.type == "virustotal_malicious" for s in vt_signals)
+        vt_url_score, vt_url_signals = 0, []
+        if not vt_malicious:
+            vt_url_score, vt_url_signals = analyze_urls_with_virustotal(sanitized["urls"])
+            emit_signals("virustotal_urls", vt_url_signals)
+            vt_malicious = any(s.type == "vt_url_malicious" for s in vt_url_signals)
+
+        llm_f = None
+        if not vt_malicious:
+            # LLM judges subject + body only (fewer tokens); links/sender are rule-engine checks
+            llm_f = ex.submit(analyze_with_llm, sanitized["subject"], sanitized["body"])
+            if emit:
+                emit({"type": "llm", "status": "started"})
 
     header_score, header_signals = header_f.result()
     url_score, url_signals = url_f.result()
     attachment_score, attachment_signals = attachment_f.result()
-    llm_score, explanation, llm_signals = llm_f.result()
+    rep_score, rep_signals = rep_f.result()
 
-    # The regex content analyzer is only a fallback: it runs when the LLM returned
-    # no usable result, so content is never judged twice. It is fast (regex only).
-    llm_available = not explanation.startswith("AI analysis unavailable")
-    if llm_available:
+    if llm_f is not None:
+        llm_score, explanation, llm_signals = llm_f.result()
+        # The regex content analyzer is only a fallback: it runs when the LLM returned
+        # no usable result, so content is never judged twice. It is fast (regex only).
+        llm_available = not explanation.startswith("AI analysis unavailable")
+    else:
+        llm_score, llm_signals, llm_available = 0, [], False
+        explanation = "VirusTotal flagged this email as malicious — AI content analysis was skipped."
+
+    if llm_available or vt_malicious:
         content_score, content_signals = 0, []
     else:
         content_score, content_signals = analyze_content(sanitized["body"], sanitized["subject"])
-    rep_score, rep_signals = rep_f.result()
-    vt_url_score, vt_url_signals = vt_url_f.result()
+        emit_signals("content", content_signals)
 
     # Cap rule-based score at 100 before blending with LLM score
     rule_score = min(header_score + content_score + url_score + attachment_score + vt_score + rep_score + vt_url_score, 100)
     all_rule_signals = header_signals + content_signals + url_signals + attachment_signals + vt_signals + rep_signals + vt_url_signals
 
     all_signals = all_rule_signals + llm_signals
-    # When the LLM returned no usable score, fall back to a fully deterministic
-    # rule-engine verdict instead of blending in a zero LLM share.
-    final_score, verdict, verdict_label = aggregate(rule_score, llm_score, llm_available)
 
-    # A VirusTotal malicious verdict (file or link) is a hard override — always dangerous
-    if any(s.type == "virustotal_malicious" for s in vt_signals) or \
-       any(s.type == "vt_url_malicious" for s in vt_url_signals):
-        final_score = 100
-        verdict = "dangerous"
-        verdict_label = "Likely Phishing"
+    if vt_malicious:
+        # A VirusTotal malicious verdict (file or link) is a hard override — always dangerous
+        final_score, verdict, verdict_label = 100, "dangerous", "Likely Phishing"
+    else:
+        # When the LLM returned no usable score, fall back to a fully deterministic
+        # rule-engine verdict instead of blending in a zero LLM share.
+        final_score, verdict, verdict_label = aggregate(rule_score, llm_score, llm_available)
 
     response = EmailAnalysisResponse(
         score=final_score,

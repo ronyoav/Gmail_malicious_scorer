@@ -81,7 +81,60 @@ async function post(url, payload, btn, errEl) {
 function analyzeRaw() {
   const raw = $("raw").value.trim();
   if (!raw) { $("err-raw").textContent = "Paste or upload the raw email first."; return; }
-  post("/api/v1/analyze-raw", { raw }, "go-raw", "err-raw");
+  if (!(window.ReadableStream && window.TextDecoder)) {
+    return post("/api/v1/analyze-raw", { raw }, "go-raw", "err-raw");  // old browser fallback
+  }
+  stream("/api/v1/analyze-raw/stream", { raw }, "go-raw", "err-raw");
+}
+
+// Streams NDJSON events: deterministic signals render as each analyzer finishes,
+// the final score (and LLM findings) replace the live view when `result` arrives.
+async function stream(url, payload, btn, errEl) {
+  $(errEl).textContent = "";
+  $(btn).disabled = true; const label = $(btn).textContent; $(btn).textContent = "Analyzing…";
+  const live = [];
+  let llmRunning = false, done = false;
+  showLive(live, llmRunning);
+  try {
+    const res = await fetch(url, { method:"POST", headers:{ "Content-Type":"application/json" }, body:JSON.stringify(payload) });
+    if (!res.ok || !res.body) throw new Error("HTTP " + res.status);
+    const reader = res.body.getReader(), dec = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { value, done: eof } = await reader.read();
+      if (eof) break;
+      buf += dec.decode(value, { stream:true });
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1);
+        if (!line) continue;
+        const ev = JSON.parse(line);
+        if (ev.type === "signals") { live.push(...ev.signals); showLive(live, llmRunning); }
+        else if (ev.type === "llm") { llmRunning = true; showLive(live, llmRunning); }
+        else if (ev.type === "result") { done = true; showResult(ev); loadHistory(); }
+        else if (ev.type === "error") throw new Error(ev.message);
+      }
+    }
+    if (!done) throw new Error("stream ended early");
+  } catch (e) {
+    $(errEl).textContent = "Failed: " + e.message;
+  } finally {
+    $(btn).disabled = false; $(btn).textContent = label;
+  }
+}
+
+function showLive(sigs, llmRunning) {
+  const el = $("result");
+  el.style.display = "block";
+  el.innerHTML =
+    `<div style="display:flex;align-items:center;gap:16px">
+       <div class="score muted">…</div>
+       <span class="verdict muted">Final score pending</span>
+     </div>
+     <div class="ghead">Rule engine · deterministic</div>
+     ${sigs.length ? renderSigs(sigs) : '<div class="muted" style="margin-top:4px">Running checks…</div>'}
+     <div class="ghead">AI content analysis · LLM</div>
+     <div class="muted" style="margin-top:4px">${llmRunning ? "Analyzing content…" : "Waiting for VirusTotal…"}</div>`;
 }
 
 function loadFile(input) {

@@ -27,11 +27,11 @@ resource "aws_launch_template" "app" {
   }
 
   user_data = base64encode(templatefile("${path.module}/user_data.sh", {
-    region    = var.region
-    app_port  = var.app_port
-    s3_bucket = aws_s3_bucket.app.id
+    region     = var.region
+    app_port   = var.app_port
+    s3_bucket  = aws_s3_bucket.app.id
     ssm_prefix = var.ssm_param_prefix
-    log_group = aws_cloudwatch_log_group.app.name
+    log_group  = aws_cloudwatch_log_group.app.name
   }))
 
   tag_specifications {

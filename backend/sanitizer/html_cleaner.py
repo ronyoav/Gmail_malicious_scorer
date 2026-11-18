@@ -2,8 +2,6 @@ import re
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 
-_URL_LIKE = re.compile(r"^https?://|^www\.", re.IGNORECASE)
-
 # Security gateways rewrite the href (wrapping the original URL), which makes the
 # visible text differ from the href even for legitimate mail. A mismatch where the
 # href points to one of these is the rewriter, not a phishing trick, so it's ignored.
@@ -18,10 +16,19 @@ _DATA_URI_RE = re.compile(r"data:[^,\s;]*(;base64)?,[A-Za-z0-9+/=]+", re.IGNOREC
 _BASE64_RE = re.compile(r"[A-Za-z0-9+/]{300,}={0,2}")
 
 
-def _root_domain(domain: str) -> str:
-    """Return the last two parts of a domain — 'jobs.intel.com' → 'intel.com'."""
-    parts = domain.split(".")
-    return ".".join(parts[-2:]) if len(parts) >= 2 else domain
+# Visible link text that is a domain: optional scheme/www, labels, and an
+# alphabetic TLD (2+ letters), optionally followed by a port/path/query.
+# "click here" / "לחץ כאן" don't match, so they're never compared.
+_DOMAIN_TEXT_RE = re.compile(
+    r"^(?:https?://)?(?:www\.)?((?:[a-z0-9-]+\.)+[a-z]{2,})(?:[:/?#].*)?$",
+    re.IGNORECASE,
+)
+
+
+def _text_domain(text: str) -> str | None:
+    """Return the domain shown in the link text, or None if the text isn't a domain."""
+    m = _DOMAIN_TEXT_RE.match(text)
+    return m.group(1).lower() if m else None
 
 
 def clean_html(html: str) -> str:
@@ -69,12 +76,16 @@ def extract_link_mismatches(html: str) -> list[dict]:
         href = a["href"].strip()
         text = a.get_text(strip=True)
 
-        if not href.startswith("http") or not _URL_LIKE.match(text):
+        if not href.startswith("http"):
+            continue
+
+        # Only compare when the visible text is itself a domain.
+        text_domain = _text_domain(text)
+        if not text_domain:
             continue
 
         try:
-            href_domain = urlparse(href).netloc.lower().removeprefix("www.")
-            text_domain = urlparse(text if text.startswith("http") else "http://" + text).netloc.lower().removeprefix("www.")
+            href_domain = (urlparse(href).hostname or "").lower().removeprefix("www.")
         except Exception:
             continue
 
@@ -83,7 +94,7 @@ def extract_link_mismatches(html: str) -> list[dict]:
         if any(marker in href_domain for marker in _URL_REWRITERS):
             continue
 
-        if href_domain and text_domain and _root_domain(href_domain) != _root_domain(text_domain):
+        if href_domain and href_domain != text_domain:
             mismatches.append({"display": text_domain, "actual": href_domain})
 
     return mismatches

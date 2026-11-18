@@ -77,3 +77,19 @@ def test_findings_carry_their_source():
         suspicious_elements=["a link"], explanation="e",
     ))
     assert sigs and all(s.source == "llm" for s in sigs)
+
+
+def test_link_mismatch_compares_domain_to_domain():
+    from backend.sanitizer.html_cleaner import extract_link_mismatches as lm
+    a = lambda href, text: f'<a href="{href}">{text}</a>'
+    # Text isn't a domain -> never compared.
+    assert lm(a("https://evil.xyz", "click here")) == []
+    assert lm(a("https://evil.xyz", "לחץ כאן")) == []
+    # Exact same domain (www ignored) -> fine.
+    assert lm(a("https://www.intel.com/x", "intel.com")) == []
+    # Different domain, even a subdomain -> mismatch (strict domain vs domain).
+    assert lm(a("https://jobs.intel.com", "https://intel.com")) == [{"display": "intel.com", "actual": "jobs.intel.com"}]
+    # Bare domain text (no www/http) pointing elsewhere -> mismatch.
+    assert lm(a("https://evil.xyz/login", "paypal.com")) == [{"display": "paypal.com", "actual": "evil.xyz"}]
+    # Same public suffix (co.il) is not the same site.
+    assert lm(a("https://evil.co.il", "bank.co.il")) == [{"display": "bank.co.il", "actual": "evil.co.il"}]

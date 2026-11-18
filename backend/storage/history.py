@@ -83,6 +83,26 @@ def record_scan(subject, sender, score, verdict, verdict_label, explanation, sig
         _reset()
 
 
+def ping() -> str:
+    """Database reachability for the /health readiness check.
+
+    "ok"       -> a SELECT 1 round-trip succeeded
+    "down"     -> DATABASE_URL is set but the DB cannot be reached
+    "disabled" -> no DATABASE_URL / no driver — history is off by design
+    """
+    if not _enabled():
+        return "disabled"
+    try:
+        with _LOCK:
+            with _connection().cursor() as cur:
+                cur.execute("SELECT 1")
+        return "ok"
+    except Exception as exc:
+        print(f"[history] health check failed: {exc}")
+        _reset()
+        return "down"
+
+
 def recent_scans(limit: int = 50) -> list[dict]:
     """Return the most recent scans (newest first). Empty list if unavailable."""
     if not _enabled():

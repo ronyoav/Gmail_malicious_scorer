@@ -80,8 +80,8 @@ flowchart TB
 ## Request flow
 
 1. Gmail Add-on / browser → **ALB :80** → one of 2 EC2 (`GET /health` gates routing).
-2. FastAPI checks **Redis** whole-email cache → hit returns immediately.
+2. FastAPI checks the **ElastiCache** whole-email cache → hit returns immediately.
 3. Miss → analyzers run in parallel, calling **Claude** + **VirusTotal** outbound.
-4. Result cached in Redis; scan history written to **RDS**; metrics/logs to **CloudWatch**.
+4. Result cached in ElastiCache; scan history written to **RDS**; metrics/logs to **CloudWatch**.
 
 > Infra source of truth is the Terraform in `deploy/terraform/`; update this diagram when the stack changes.

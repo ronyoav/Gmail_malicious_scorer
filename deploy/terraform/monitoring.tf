@@ -270,8 +270,8 @@ resource "aws_cloudwatch_metric_alarm" "rds_low_memory" {
   namespace           = "AWS/RDS"
   period              = 60
   statistic           = "Average"
-  threshold           = 256 * 1024 * 1024 # 256 MiB in bytes
-  alarm_description   = "RDS freeable memory under 256 MB — risk of swapping."
+  threshold           = 100 * 1024 * 1024 # 100 MiB — tuned for db.t3.micro (1GB); ~200MB free is its healthy steady state, so 256MB false-fired
+  alarm_description   = "RDS freeable memory under 100 MB — real memory pressure on this 1GB instance."
   treat_missing_data  = "missing"
   alarm_actions       = [aws_sns_topic.alerts.arn]
   ok_actions          = [aws_sns_topic.alerts.arn]

@@ -1,56 +1,29 @@
-var _SIGNAL_GROUPS = {
-  "Headers & Sender": [
-    "spf_fail", "spf_missing", "dkim_fail", "dkim_missing", "dmarc_fail",
-    "reply_to_mismatch", "display_name_spoofing", "lookalike_domain"
-  ],
-  "Content": [
-    "urgency_language", "credential_phishing", "financial_lure", "threat_language",
-    "qr_code_lure", "captcha_lure"
-  ],
-  "Links & URLs": [
-    "url_shortener", "suspicious_tld", "ip_url",
-    "link_text_mismatch", "base64_payload"
-  ],
-  "Attachments": [
-    "dangerous_attachment", "suspicious_attachment",
-    "double_extension", "mime_mismatch",
-    "virustotal_malicious", "virustotal_suspicious"
-  ],
-  "AI Analysis": [
-    "llm_intent", "llm_impersonation", "llm_urgency", "llm_suspicious_elements"
-  ]
-};
+// Card layout mirrors the web UI (backend/web/index.html showResult):
+// big score + verdict, explanation, then signals split into two groups by
+// source — "Rule engine · deterministic" and "AI content analysis · LLM".
 
-function _buildProgressBar(score) {
-  var filled = Math.round(score / 100 * 15);
-  var empty  = 15 - filled;
-  return "█".repeat(filled) + "░".repeat(empty) + "  " + score + " / 100";
+var _SEV_COLOR = { high: "#D32F2F", medium: "#E8820C", low: "#5F6368" };
+
+function _sevChip(severity) {
+  var sev = (severity || "low").toLowerCase();
+  var color = _SEV_COLOR[sev] || _SEV_COLOR.low;
+  return '<font color="' + color + '"><b>' + sev.toUpperCase() + '</b></font>';
 }
 
-function _groupSignals(signals) {
-  var grouped = {};
-  var ungrouped = [];
-
+function _renderSignals(section, signals) {
+  if (!signals || signals.length === 0) {
+    section.addWidget(
+      CardService.newTextParagraph().setText('<font color="#5F6368">No signals.</font>')
+    );
+    return;
+  }
   signals.forEach(function(signal) {
-    var placed = false;
-    for (var group in _SIGNAL_GROUPS) {
-      if (_SIGNAL_GROUPS[group].indexOf(signal.type) !== -1) {
-        if (!grouped[group]) grouped[group] = [];
-        grouped[group].push(signal);
-        placed = true;
-        break;
-      }
-    }
-    if (!placed) ungrouped.push(signal);
+    section.addWidget(
+      CardService.newDecoratedText()
+        .setText(_sevChip(signal.severity) + "  " + signal.description)
+        .setWrapText(true)
+    );
   });
-
-  return { grouped: grouped, ungrouped: ungrouped };
-}
-
-function _groupIcon(signals) {
-  var hasHigh   = signals.some(function(s) { return s.severity === "high"; });
-  var hasMedium = signals.some(function(s) { return s.severity === "medium"; });
-  return hasHigh ? "🔴" : hasMedium ? "🟡" : "🟢";
 }
 
 function buildCard(result) {
@@ -59,6 +32,10 @@ function buildCard(result) {
   var label       = result.verdict_label;
   var explanation = result.explanation;
   var signals     = result.signals || [];
+
+  // Match the web: split by signal.source (default "rule").
+  var ruleSigs = signals.filter(function(s) { return (s.source || "rule") !== "llm"; });
+  var llmSigs  = signals.filter(function(s) { return (s.source || "rule") === "llm"; });
 
   var verdictIcon = verdict === "safe" ? "✅"
                   : verdict === "suspicious" ? "⚠️"
@@ -71,55 +48,31 @@ function buildCard(result) {
         .setSubtitle("Powered by AI analysis")
     );
 
-  // Score + progress bar
+  // Score + verdict + explanation (top block, like the web header)
   var scoreSection = CardService.newCardSection();
   scoreSection.addWidget(
     CardService.newDecoratedText()
       .setTopLabel("VERDICT")
-      .setText(verdictIcon + "  " + label)
-      .setBottomLabel(_buildProgressBar(score))
+      .setText(verdictIcon + "  <b>" + label + "</b>")
+      .setBottomLabel(score + " / 100")
       .setWrapText(false)
   );
+  if (explanation) {
+    scoreSection.addWidget(
+      CardService.newTextParagraph().setText(explanation)
+    );
+  }
   card.addSection(scoreSection);
 
-  // Grouped signals
-  if (signals.length > 0) {
-    var grouped = _groupSignals(signals).grouped;
+  // Rule engine · deterministic
+  var ruleSection = CardService.newCardSection().setHeader("RULE ENGINE · DETERMINISTIC");
+  _renderSignals(ruleSection, ruleSigs);
+  card.addSection(ruleSection);
 
-    for (var groupName in _SIGNAL_GROUPS) {
-      var groupSignals = grouped[groupName];
-      if (!groupSignals || groupSignals.length === 0) continue;
-
-      var groupSection = CardService.newCardSection()
-        .setHeader(_groupIcon(groupSignals) + "  " + groupName)
-        .setCollapsible(true)
-        .setNumUncollapsibleWidgets(groupSignals.length);
-
-      groupSignals.forEach(function(signal) {
-        var severityIcon = signal.severity === "high" ? "🔴"
-                         : signal.severity === "medium" ? "🟡"
-                         : "🟢";
-        groupSection.addWidget(
-          CardService.newDecoratedText()
-            .setTopLabel(severityIcon + " " + signal.severity.toUpperCase())
-            .setText(signal.description)
-            .setWrapText(true)
-        );
-      });
-
-      card.addSection(groupSection);
-    }
-  }
-
-  // Explanation
-  var explanationSection = CardService.newCardSection()
-    .setHeader("💬 What does this mean?")
-    .setCollapsible(true)
-    .setNumUncollapsibleWidgets(1);
-  explanationSection.addWidget(
-    CardService.newTextParagraph().setText(explanation)
-  );
-  card.addSection(explanationSection);
+  // AI content analysis · LLM
+  var llmSection = CardService.newCardSection().setHeader("AI CONTENT ANALYSIS · LLM");
+  _renderSignals(llmSection, llmSigs);
+  card.addSection(llmSection);
 
   return card.build();
 }

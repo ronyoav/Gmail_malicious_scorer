@@ -244,7 +244,14 @@ def _analyze(request: EmailAnalysisRequest, emit=None) -> EmailAnalysisResponse:
     else:
         # When the LLM returned no usable score, fall back to a fully deterministic
         # rule-engine verdict instead of blending in a zero LLM share.
-        final_score, verdict, verdict_label = aggregate(rule_score, llm_score, llm_available)
+        # A high-severity llm_intent signal (credential harvesting / financial fraud /
+        # malware delivery) is a confirmed malicious intent — floor it out of Safe.
+        definitive_malicious_intent = any(
+            s.type == "llm_intent" and s.severity == "high" for s in llm_signals
+        )
+        final_score, verdict, verdict_label = aggregate(
+            rule_score, llm_score, llm_available, definitive_malicious_intent
+        )
 
     response = EmailAnalysisResponse(
         score=final_score,

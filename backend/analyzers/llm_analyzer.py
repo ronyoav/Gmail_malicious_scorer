@@ -180,29 +180,34 @@ def _score_features(data: _LLMOutput) -> tuple[int, list[Signal]]:
     score = 0
     signals = []
 
+    # Definitive malicious intents: when the LLM names a concrete goal (it defaults to
+    # "legitimate" otherwise), that is the single strongest phishing signal we have, so
+    # it carries real weight. Legitimate mail scores 0 here regardless, so raising these
+    # does not add false positives — it only stops confident detections landing in Safe.
     if data.intent == "credential_harvesting":
-        score += 35
+        score += 50
         signals.append(Signal(type="llm_intent", severity="high", description="AI detected intent: credential harvesting."))
     elif data.intent == "financial_fraud":
-        score += 35
+        score += 50
         signals.append(Signal(type="llm_intent", severity="high", description="AI detected intent: financial fraud."))
     elif data.intent == "malware_delivery":
-        score += 40
+        score += 55
         signals.append(Signal(type="llm_intent", severity="high", description="AI detected intent: malware delivery."))
     elif data.intent == "spam":
-        score += 10
+        score += 15
         signals.append(Signal(type="llm_intent", severity="low", description="AI detected intent: spam."))
     elif data.intent == "legitimate":
         signals.append(Signal(type="llm_legitimate", severity="low", description="AI assessed the email as legitimate."))
 
     if data.urgency_level == 3:
-        score += 15
+        score += 20
         signals.append(Signal(type="llm_urgency", severity="high", description="AI detected extreme urgency pressure."))
     elif data.urgency_level == 2:
-        score += 8
+        score += 10
         signals.append(Signal(type="llm_urgency", severity="medium", description="AI detected moderate urgency language."))
 
     if data.suspicious_elements:
+        score += 10
         signals.append(Signal(
             type="llm_suspicious_elements",
             severity="medium",

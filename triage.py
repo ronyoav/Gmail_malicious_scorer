@@ -254,7 +254,7 @@ def main():
         return score, expl, sig
 
     scorer.analyze_with_llm = llm_or_flag
-    scorer.aggregate = lambda rule, llm, available=True: _agg(rule, llm, available and llm >= 0)
+    scorer.aggregate = lambda rule, llm, available=True, definitive=False: _agg(rule, llm, available and llm >= 0, definitive)
     files = collect(args.inputs)
     if not files:
         sys.exit("No input files found.")
